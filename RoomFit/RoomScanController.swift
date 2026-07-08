@@ -1,0 +1,623 @@
+import Foundation
+import RoomPlan
+import simd
+
+@MainActor
+final class RoomScanController: NSObject, ObservableObject {
+    @Published var isScanning = false
+    @Published var capturedRoom: CapturedRoom?
+    @Published var exportedFileURL: URL?
+    @Published var jsonPreviewText: String?
+    @Published var statusText = "Ready to scan."
+
+    private weak var captureSession: RoomCaptureSession?
+    private let roomBuilder = RoomBuilder(options: [.beautifyObjects])
+
+    var canExportJSON: Bool {
+        capturedRoom != nil || jsonPreviewText != nil
+    }
+
+    func attach(_ captureSession: RoomCaptureSession) {
+        self.captureSession = captureSession
+        captureSession.delegate = self
+    }
+
+    func startScan() {
+        guard RoomCaptureSession.isSupported else {
+            statusText = "RoomPlan is not supported on this device."
+            return
+        }
+
+        guard let captureSession else {
+            statusText = "Scanner is not ready yet."
+            return
+        }
+
+        // 이전 세션이 아직 돌고 있으면 먼저 정지
+        if isScanning {
+            captureSession.stop()
+        }
+
+        // 상태 초기화
+        capturedRoom = nil
+        exportedFileURL = nil
+        jsonPreviewText = nil
+        isScanning = false  // 잠깐 false로 리셋
+
+        // 약간의 딜레이 후 새 스캔 시작 (이전 세션 정리 시간 확보)
+        statusText = "Preparing scanner..."
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(500))
+
+            var configuration = RoomCaptureSession.Configuration()
+            configuration.isCoachingEnabled = true
+            captureSession.run(configuration: configuration)
+            isScanning = true
+            statusText = "Scanning..."
+        }
+    }
+
+    func stopScan() {
+        guard isScanning else { return }
+
+        isScanning = false  // 먼저 false로 바꿔서 UI 반응 즉시
+        statusText = "Processing scan..."
+        captureSession?.stop()
+    }
+
+    func saveJSON() {
+        do {
+            let url = try exportJSON()
+            statusText = "Saved: \(url.lastPathComponent)"
+        } catch {
+            showError(error)
+        }
+    }
+
+    func generateMockRoomJSON() {
+        capturedRoom = nil
+        exportedFileURL = nil
+        jsonPreviewText = makeJSONString(
+            from: RoomFitRoomJSON(
+                room: RoomFitRoom(width: 3.2, depth: 4.5, height: 2.4),
+                openings: [],
+                furniture: []
+            )
+        )
+        statusText = "Mock room JSON is ready."
+    }
+
+    func createManualRoomJSON(widthText: String, depthText: String, heightText: String) {
+        do {
+            let width = try parseMeasurement(from: widthText, fieldName: "Room width")
+            let depth = try parseMeasurement(from: depthText, fieldName: "Room depth")
+            let height = try parseMeasurement(from: heightText, fieldName: "Room height")
+
+            capturedRoom = nil
+            exportedFileURL = nil
+            jsonPreviewText = makeJSONString(
+                from: RoomFitRoomJSON(
+                    room: RoomFitRoom(width: width, depth: depth, height: height),
+                    openings: [],
+                    furniture: []
+                )
+            )
+            statusText = "Manual room JSON is ready."
+        } catch {
+            showError(error)
+        }
+    }
+
+    @discardableResult
+    func exportJSON() throws -> URL {
+        let data = try exportJSONData()
+        let directory = try scansDirectory()
+        let url = directory.appendingPathComponent(Self.fileName(), conformingTo: .json)
+        try data.write(to: url, options: .atomic)
+
+        exportedFileURL = url
+        return url
+    }
+
+    func showError(_ error: Error) {
+        statusText = "Error: \(error.localizedDescription)"
+    }
+
+    private func scansDirectory() throws -> URL {
+        let documentsDirectory = try FileManager.default.url(
+            for: .documentDirectory,
+            in: .userDomainMask,
+            appropriateFor: nil,
+            create: true
+        )
+        let scansDirectory = documentsDirectory.appendingPathComponent("RoomScans", isDirectory: true)
+        try FileManager.default.createDirectory(at: scansDirectory, withIntermediateDirectories: true)
+        return scansDirectory
+    }
+
+    private func exportJSONData() throws -> Data {
+        if let jsonPreviewText, let data = jsonPreviewText.data(using: .utf8) {
+            return data
+        }
+
+        throw ExportError.noRoomJSON
+    }
+
+    private static func fileName() -> String {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyyMMdd-HHmmss"
+        return "RoomScan-\(formatter.string(from: Date())).json"
+    }
+
+    private func parseMeasurement(from text: String, fieldName: String) throws -> Double {
+        let normalized = text
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: ",", with: ".")
+
+        guard let value = Double(normalized), value > 0 else {
+            throw ExportError.invalidMeasurement(fieldName)
+        }
+
+        return value
+    }
+
+    private func makeJSONString(from roomJSON: RoomFitRoomJSON) -> String? {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+
+        guard let data = try? encoder.encode(roomJSON) else {
+            return nil
+        }
+
+        return String(data: data, encoding: .utf8)
+    }
+
+    private func makeRoomFitJSON(from capturedRoom: CapturedRoom) -> RoomFitRoomJSON {
+        let frame = makeReferenceFrame(from: capturedRoom)
+
+        let room = RoomFitRoom(
+            width: roundedMeasurement(frame?.width ?? roomWidthFallback(from: capturedRoom)),
+            depth: roundedMeasurement(frame?.depth ?? roomDepthFallback(from: capturedRoom)),
+            height: roomHeight(from: capturedRoom)
+        )
+
+        return RoomFitRoomJSON(
+            room: room,
+            openings: extractOpenings(from: capturedRoom, frame: frame),
+            furniture: extractFurniture(from: capturedRoom, frame: frame)
+        )
+    }
+
+    // MARK: - Room-local coordinate frame
+    //
+    // RoomPlan reports every position/rotation in an arbitrary ARKit world
+    // coordinate system, not aligned to the room's own axes. Without correcting
+    // for the room's own origin/yaw, furniture positions and rotations can't be
+    // placed consistently inside the reported width x depth rectangle. Every
+    // furniture/opening coordinate below is expressed relative to this frame,
+    // with the origin at the room's near-left corner (0...width, 0...depth).
+
+    private struct RoomReferenceFrame {
+        let originX: Double
+        let originZ: Double
+        let originY: Double // world Y of the floor, used as the sill-height reference
+        let xAxisX: Double
+        let xAxisZ: Double
+        let zAxisX: Double
+        let zAxisZ: Double
+        let width: Double
+        let depth: Double
+    }
+
+    private enum WallSide: String {
+        case north, south, east, west
+    }
+
+    private func makeReferenceFrame(from capturedRoom: CapturedRoom) -> RoomReferenceFrame? {
+        if #available(iOS 17.0, *), let floor = capturedRoom.floors.first {
+            return referenceFrame(fromFloor: floor)
+        }
+        return referenceFrame(fromWalls: capturedRoom.walls)
+    }
+
+    private func referenceFrame(fromFloor floor: CapturedRoom.Surface) -> RoomReferenceFrame {
+        let transform = floor.transform
+        let xAxis = normalizedXZ(transform.columns.0)
+        let zAxis = normalizedXZ(transform.columns.2)
+
+        return RoomReferenceFrame(
+            originX: Double(transform.columns.3.x),
+            originZ: Double(transform.columns.3.z),
+            originY: Double(transform.columns.3.y),
+            xAxisX: xAxis.x, xAxisZ: xAxis.z,
+            zAxisX: zAxis.x, zAxisZ: zAxis.z,
+            width: Double(abs(floor.dimensions.x)),
+            depth: Double(abs(floor.dimensions.z))
+        )
+    }
+
+    /// Pre-iOS 17 fallback: `floors`/`polygonCorners` aren't available, so the frame
+    /// is derived from the wall with the room's bounding box built from each wall's endpoints.
+    private func referenceFrame(fromWalls walls: [CapturedRoom.Surface]) -> RoomReferenceFrame? {
+        guard let referenceWall = walls.first else { return nil }
+
+        let refTransform = referenceWall.transform
+        let xAxis = normalizedXZ(refTransform.columns.0)
+        let zAxis = normalizedXZ(refTransform.columns.2)
+        let originX = Double(refTransform.columns.3.x)
+        let originZ = Double(refTransform.columns.3.z)
+
+        var minX = Double.greatestFiniteMagnitude
+        var maxX = -Double.greatestFiniteMagnitude
+        var minZ = Double.greatestFiniteMagnitude
+        var maxZ = -Double.greatestFiniteMagnitude
+
+        for wall in walls {
+            let wallTransform = wall.transform
+            let direction = normalizedXZ(wallTransform.columns.0)
+            let halfLength = Double(wall.dimensions.x) / 2
+            let centerX = Double(wallTransform.columns.3.x)
+            let centerZ = Double(wallTransform.columns.3.z)
+
+            for sign in [1.0, -1.0] {
+                let endpointX = centerX + direction.x * halfLength * sign
+                let endpointZ = centerZ + direction.z * halfLength * sign
+                let dx = endpointX - originX
+                let dz = endpointZ - originZ
+                let localX = dx * xAxis.x + dz * xAxis.z
+                let localZ = dx * zAxis.x + dz * zAxis.z
+                minX = min(minX, localX); maxX = max(maxX, localX)
+                minZ = min(minZ, localZ); maxZ = max(maxZ, localZ)
+            }
+        }
+
+        guard minX.isFinite, maxX.isFinite, minZ.isFinite, maxZ.isFinite else { return nil }
+
+        let centerLocalX = (minX + maxX) / 2
+        let centerLocalZ = (minZ + maxZ) / 2
+        let floorY = Double(refTransform.columns.3.y) - Double(referenceWall.dimensions.y) / 2
+
+        return RoomReferenceFrame(
+            originX: originX + centerLocalX * xAxis.x + centerLocalZ * zAxis.x,
+            originZ: originZ + centerLocalX * xAxis.z + centerLocalZ * zAxis.z,
+            originY: floorY,
+            xAxisX: xAxis.x, xAxisZ: xAxis.z,
+            zAxisX: zAxis.x, zAxisZ: zAxis.z,
+            width: maxX - minX,
+            depth: maxZ - minZ
+        )
+    }
+
+    private func normalizedXZ(_ column: SIMD4<Float>) -> (x: Double, z: Double) {
+        let x = Double(column.x), z = Double(column.z)
+        let length = (x * x + z * z).squareRoot()
+        guard length > 0 else { return (1, 0) }
+        return (x / length, z / length)
+    }
+
+    /// Room-local, center-origin coordinates (range roughly -extent/2...+extent/2).
+    private func localCoordinates(worldX: Double, worldZ: Double, frame: RoomReferenceFrame) -> (x: Double, z: Double) {
+        let dx = worldX - frame.originX
+        let dz = worldZ - frame.originZ
+        let localX = dx * frame.xAxisX + dz * frame.xAxisZ
+        let localZ = dx * frame.zAxisX + dz * frame.zAxisZ
+        return (localX, localZ)
+    }
+
+    /// Room-local, corner-origin coordinates (range 0...width, 0...depth) — matches the backend's convention.
+    private func cornerCoordinates(worldX: Double, worldZ: Double, frame: RoomReferenceFrame) -> (x: Double, z: Double) {
+        let local = localCoordinates(worldX: worldX, worldZ: worldZ, frame: frame)
+        return (local.x + frame.width / 2, local.z + frame.depth / 2)
+    }
+
+    private func localRotationDegrees(from transform: simd_float4x4, frame: RoomReferenceFrame) -> Double {
+        let objectYaw = atan2(Double(transform.columns.0.z), Double(transform.columns.0.x))
+        let frameYaw = atan2(frame.xAxisZ, frame.xAxisX)
+        var degrees = (objectYaw - frameYaw) * 180.0 / .pi
+        degrees = degrees.truncatingRemainder(dividingBy: 360)
+        if degrees < 0 { degrees += 360 }
+        return roundedOffset(degrees)
+    }
+
+    private func wallSide(of wall: CapturedRoom.Surface, frame: RoomReferenceFrame) -> WallSide {
+        let direction = normalizedXZ(wall.transform.columns.0)
+        let alongX = abs(direction.x * frame.xAxisX + direction.z * frame.xAxisZ)
+        let alongZ = abs(direction.x * frame.zAxisX + direction.z * frame.zAxisZ)
+
+        let center = localCoordinates(
+            worldX: Double(wall.transform.columns.3.x),
+            worldZ: Double(wall.transform.columns.3.z),
+            frame: frame
+        )
+
+        if alongX >= alongZ {
+            return center.z >= 0 ? .south : .north
+        } else {
+            return center.x >= 0 ? .east : .west
+        }
+    }
+
+    /// Finds the wall a door/window belongs to. Uses RoomPlan's own parent link on iOS 17+;
+    /// falls back to nearest-wall-by-distance since `parentIdentifier` isn't available on iOS 16.
+    private func resolveWall(for surface: CapturedRoom.Surface, walls: [CapturedRoom.Surface]) -> CapturedRoom.Surface? {
+        if #available(iOS 17.0, *),
+           let parentId = surface.parentIdentifier,
+           let wall = walls.first(where: { $0.identifier == parentId }) {
+            return wall
+        }
+        return nearestWall(to: surface, in: walls)
+    }
+
+    private func nearestWall(to surface: CapturedRoom.Surface, in walls: [CapturedRoom.Surface]) -> CapturedRoom.Surface? {
+        let point = (x: Double(surface.transform.columns.3.x), z: Double(surface.transform.columns.3.z))
+        return walls.min { distanceToWallLine($0, point: point) < distanceToWallLine($1, point: point) }
+    }
+
+    private func distanceToWallLine(_ wall: CapturedRoom.Surface, point: (x: Double, z: Double)) -> Double {
+        let direction = normalizedXZ(wall.transform.columns.0)
+        let halfLength = Double(wall.dimensions.x) / 2
+        let centerX = Double(wall.transform.columns.3.x)
+        let centerZ = Double(wall.transform.columns.3.z)
+
+        let toPointX = point.x - centerX
+        let toPointZ = point.z - centerZ
+        let alongWall = max(-halfLength, min(halfLength, toPointX * direction.x + toPointZ * direction.z))
+        let closestX = centerX + direction.x * alongWall
+        let closestZ = centerZ + direction.z * alongWall
+
+        let dx = point.x - closestX
+        let dz = point.z - closestZ
+        return (dx * dx + dz * dz).squareRoot()
+    }
+
+    // MARK: - Openings
+
+    private func extractOpenings(from capturedRoom: CapturedRoom, frame: RoomReferenceFrame?) -> [RoomFitOpening] {
+        guard let frame else { return [] }
+
+        func wallSideAndOffset(for surface: CapturedRoom.Surface) -> (WallSide, Double)? {
+            guard let wall = resolveWall(for: surface, walls: capturedRoom.walls) else { return nil }
+            let side = wallSide(of: wall, frame: frame)
+            let corner = cornerCoordinates(
+                worldX: Double(surface.transform.columns.3.x),
+                worldZ: Double(surface.transform.columns.3.z),
+                frame: frame
+            )
+            let offset = (side == .north || side == .south) ? corner.x : corner.z
+            return (side, roundedOffset(offset))
+        }
+
+        var openings: [RoomFitOpening] = []
+
+        for door in capturedRoom.doors {
+            guard let (side, offset) = wallSideAndOffset(for: door) else { continue }
+            openings.append(RoomFitOpening(
+                id: door.identifier.uuidString,
+                type: "door",
+                wall: side.rawValue,
+                offset: offset,
+                width: Double(door.dimensions.x),
+                height: Double(door.dimensions.y),
+                sillHeight: nil
+            ))
+        }
+
+        for window in capturedRoom.windows {
+            guard let (side, offset) = wallSideAndOffset(for: window) else { continue }
+            let bottomY = Double(window.transform.columns.3.y) - Double(window.dimensions.y) / 2
+            openings.append(RoomFitOpening(
+                id: window.identifier.uuidString,
+                type: "window",
+                wall: side.rawValue,
+                offset: offset,
+                width: Double(window.dimensions.x),
+                height: Double(window.dimensions.y),
+                sillHeight: roundedOffset(max(0, bottomY - frame.originY))
+            ))
+        }
+
+        return openings
+    }
+
+    // MARK: - Furniture
+
+    private func extractFurniture(from capturedRoom: CapturedRoom, frame: RoomReferenceFrame?) -> [RoomFitFurniture] {
+        guard let frame else { return [] }
+
+        return capturedRoom.objects.compactMap { object -> RoomFitFurniture? in
+            guard let type = mapCategory(object.category) else { return nil }
+
+            let corner = cornerCoordinates(
+                worldX: Double(object.transform.columns.3.x),
+                worldZ: Double(object.transform.columns.3.z),
+                frame: frame
+            )
+            let rotation = localRotationDegrees(from: object.transform, frame: frame)
+            let footprint = worldAlignedFootprint(
+                rawWidth: Double(object.dimensions.x),
+                rawDepth: Double(object.dimensions.z),
+                rotationDegrees: rotation
+            )
+
+            return RoomFitFurniture(
+                id: object.identifier.uuidString,
+                type: type,
+                label: koreanLabel(for: type),
+                width: footprint.width,
+                depth: footprint.depth,
+                height: Double(object.dimensions.y),
+                position: RoomFitPosition(x: roundedOffset(corner.x), z: roundedOffset(corner.z)),
+                rotation: rotation,
+                status: "EXISTING"
+            )
+        }
+    }
+
+    /// The backend's boundary/collision checks only handle 0/90/180/270 rotation and expect
+    /// width/depth to already be the object's extent along the room's x/z axes — so a desk
+    /// that's turned sideways must report its footprint with width and depth swapped rather
+    /// than its unrotated catalog dimensions. `rotationDegrees` is the room-local rotation
+    /// computed above (already corrected for the room's own yaw), snapped to the nearest
+    /// quadrant here purely to decide whether a swap applies.
+    private func worldAlignedFootprint(
+        rawWidth: Double,
+        rawDepth: Double,
+        rotationDegrees: Double
+    ) -> (width: Double, depth: Double) {
+        let normalized = rotationDegrees.truncatingRemainder(dividingBy: 180)
+        let positiveNormalized = normalized < 0 ? normalized + 180 : normalized
+        let isPerpendicular = positiveNormalized > 45 && positiveNormalized < 135
+
+        return isPerpendicular ? (rawDepth, rawWidth) : (rawWidth, rawDepth)
+    }
+
+    /// MVP backend only supports bed/desk/chair/storage/rug/lamp; RoomPlan categories
+    /// with no equivalent (sofa, TV, fireplace, bathtub, toilet, sink, washer/dryer,
+    /// refrigerator, oven, dishwasher, stove, stairs) are dropped from the scan result.
+    private func mapCategory(_ category: CapturedRoom.Object.Category) -> String? {
+        switch category {
+        case .bed:     return "bed"
+        case .table:   return "desk"
+        case .chair:   return "chair"
+        case .storage: return "storage"
+        default:       return nil
+        }
+    }
+
+    private func koreanLabel(for type: String) -> String {
+        switch type {
+        case "bed":     return "침대"
+        case "desk":    return "책상"
+        case "chair":   return "의자"
+        case "storage": return "수납장"
+        default:        return type
+        }
+    }
+
+    // MARK: - Room dimensions
+
+    private func roomWidthFallback(from capturedRoom: CapturedRoom) -> Double {
+        let wallWidths = capturedRoom.walls.map { sortedDimensions(from: $0.dimensions).last ?? 0 }
+        return wallWidths.max() ?? 0
+    }
+
+    private func roomDepthFallback(from capturedRoom: CapturedRoom) -> Double {
+        let wallWidths = capturedRoom.walls.map { sortedDimensions(from: $0.dimensions).last ?? 0 }
+        let distinctWidths = wallWidths.sorted(by: >)
+        return distinctWidths.dropFirst().first ?? distinctWidths.first ?? 0
+    }
+
+    private func roomHeight(from capturedRoom: CapturedRoom) -> Double {
+        let wallHeights = capturedRoom.walls.map {
+            let sorted = sortedDimensions(from: $0.dimensions)
+            return sorted.count >= 2 ? sorted[1] : (sorted.first ?? 0)
+        }
+        return roundedMeasurement(wallHeights.max() ?? 2.4)
+    }
+
+    private func sortedDimensions(from dimensions: simd_float3) -> [Double] {
+        [Double(abs(dimensions.x)), Double(abs(dimensions.y)), Double(abs(dimensions.z))].sorted()
+    }
+
+    private func roundedMeasurement(_ value: Double) -> Double {
+        (value * 10).rounded() / 10
+    }
+
+    private func roundedOffset(_ value: Double) -> Double {
+        (value * 100).rounded() / 100
+    }
+}
+
+extension RoomScanController: RoomCaptureSessionDelegate {
+    nonisolated func captureSession(_ session: RoomCaptureSession, didEndWith data: CapturedRoomData, error: Error?) {
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+
+            if let error {
+                self.isScanning = false
+                self.showError(error)
+                return
+            }
+
+            do {
+                self.capturedRoom = try await self.roomBuilder.capturedRoom(from: data)
+                self.exportedFileURL = nil
+                if let capturedRoom = self.capturedRoom {
+                    self.jsonPreviewText = self.makeJSONString(from: self.makeRoomFitJSON(from: capturedRoom))
+                } else {
+                    self.jsonPreviewText = nil
+                }
+                self.isScanning = false
+                self.statusText = "Scan complete. JSON export is ready."
+            } catch {
+                self.isScanning = false
+                self.showError(error)
+            }
+        }
+    }
+    var needsReattach: Bool {
+        captureSession == nil  // weak 참조가 해제됐으면 재연결 필요
+    }
+}
+
+private enum ExportError: LocalizedError {
+    case noRoomJSON
+    case invalidMeasurement(String)
+
+    var errorDescription: String? {
+        switch self {
+        case .noRoomJSON:
+            return "No room JSON is available."
+        case .invalidMeasurement(let fieldName):
+            return "\(fieldName) must be a number greater than 0."
+        }
+    }
+}
+
+private struct RoomFitRoomJSON: Codable {
+    let room: RoomFitRoom
+    let openings: [RoomFitOpening]
+    let furniture: [RoomFitFurniture]
+}
+
+private struct RoomFitRoom: Codable {
+    let width: Double
+    let depth: Double
+    let height: Double
+    let unit: String
+
+    init(width: Double, depth: Double, height: Double, unit: String = "meter") {
+        self.width = width
+        self.depth = depth
+        self.height = height
+        self.unit = unit
+    }
+}
+
+private struct RoomFitPosition: Codable {
+    let x: Double
+    let z: Double
+}
+
+private struct RoomFitOpening: Codable {
+    let id: String
+    let type: String
+    let wall: String
+    let offset: Double
+    let width: Double
+    let height: Double
+    let sillHeight: Double?
+}
+
+private struct RoomFitFurniture: Codable {
+    let id: String
+    let type: String
+    let label: Stringㅇ
+    let width: Double
+    let depth: Double
+    let height: Double
+    let position: RoomFitPosition
+    let rotation: Double
+    let status: String
+}
+

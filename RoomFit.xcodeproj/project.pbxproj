@@ -12,6 +12,8 @@
 		4B0473A22C3D120100000001 /* RoomScanController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4B04739D2C3D120100000001 /* RoomScanController.swift */; };
 		4B0473A32C3D120100000001 /* RoomCaptureViewContainer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4B04739E2C3D120100000001 /* RoomCaptureViewContainer.swift */; };
 		4B0473A42C3D120100000001 /* ShareSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4B04739F2C3D120100000001 /* ShareSheet.swift */; };
+		4B2000022C3D130100000001 /* BackendConfig.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4B2000002C3D130100000001 /* BackendConfig.swift */; };
+		4B2000032C3D130100000001 /* RoomUploadService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4B2000012C3D130100000001 /* RoomUploadService.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -21,6 +23,9 @@
 		4B04739D2C3D120100000001 /* RoomScanController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RoomScanController.swift; sourceTree = "<group>"; };
 		4B04739E2C3D120100000001 /* RoomCaptureViewContainer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RoomCaptureViewContainer.swift; sourceTree = "<group>"; };
 		4B04739F2C3D120100000001 /* ShareSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShareSheet.swift; sourceTree = "<group>"; };
+		4B2000002C3D130100000001 /* BackendConfig.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackendConfig.swift; sourceTree = "<group>"; };
+		4B2000012C3D130100000001 /* RoomUploadService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RoomUploadService.swift; sourceTree = "<group>"; };
+		4B2000042C3D130100000001 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -54,10 +59,13 @@
 			isa = PBXGroup;
 			children = (
 				4B04739B2C3D120100000001 /* RoomFitApp.swift */,
+				4B2000002C3D130100000001 /* BackendConfig.swift */,
 				4B04739C2C3D120100000001 /* ContentView.swift */,
 				4B04739D2C3D120100000001 /* RoomScanController.swift */,
+				4B2000012C3D130100000001 /* RoomUploadService.swift */,
 				4B04739E2C3D120100000001 /* RoomCaptureViewContainer.swift */,
 				4B04739F2C3D120100000001 /* ShareSheet.swift */,
+				4B2000042C3D130100000001 /* Info.plist */,
 			);
 			path = RoomFit;
 			sourceTree = "<group>";
@@ -134,8 +142,10 @@
 			buildActionMask = 2147483647;
 			files = (
 				4B0473A02C3D120100000001 /* RoomFitApp.swift in Sources */,
+				4B2000022C3D130100000001 /* BackendConfig.swift in Sources */,
 				4B0473A12C3D120100000001 /* ContentView.swift in Sources */,
 				4B0473A22C3D120100000001 /* RoomScanController.swift in Sources */,
+				4B2000032C3D130100000001 /* RoomUploadService.swift in Sources */,
 				4B0473A32C3D120100000001 /* RoomCaptureViewContainer.swift in Sources */,
 				4B0473A42C3D120100000001 /* ShareSheet.swift in Sources */,
 			);
@@ -271,7 +281,8 @@
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_ASSET_PATHS = "";
 				DEVELOPMENT_TEAM = MYCFDSZ48B;
-				GENERATE_INFOPLIST_FILE = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = RoomFit/Info.plist;
 				INFOPLIST_KEY_NSCameraUsageDescription = "RoomFit uses the camera and LiDAR sensor to scan rooms with RoomPlan.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
@@ -300,7 +311,8 @@
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_ASSET_PATHS = "";
 				DEVELOPMENT_TEAM = MYCFDSZ48B;
-				GENERATE_INFOPLIST_FILE = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = RoomFit/Info.plist;
 				INFOPLIST_KEY_NSCameraUsageDescription = "RoomFit uses the camera and LiDAR sensor to scan rooms with RoomPlan.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;

@@ -90,24 +90,49 @@ struct ContentView: View {
     }
 
     private var exportControls: some View {
-        HStack(spacing: 12) {
-            Button {
-                scanner.saveJSON()
-            } label: {
-                Label("Save JSON", systemImage: "square.and.arrow.down")
-                    .frame(maxWidth: .infinity)
+        VStack(spacing: 10) {
+            HStack(spacing: 12) {
+                Button {
+                    scanner.saveJSON()
+                } label: {
+                    Label("Save JSON", systemImage: "square.and.arrow.down")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered)
+                .disabled(!scanner.canExportJSON)
+
+                Button {
+                    shareJSON()
+                } label: {
+                    Label("Share JSON", systemImage: "square.and.arrow.up")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered)
+                .disabled(!scanner.canExportJSON)
             }
-            .buttonStyle(.bordered)
-            .disabled(!scanner.canExportJSON)
 
             Button {
-                shareJSON()
+                scanner.uploadJSONToBackend()
             } label: {
-                Label("Share JSON", systemImage: "square.and.arrow.up")
+                HStack {
+                    if scanner.isUploadingToBackend {
+                        ProgressView()
+                    } else {
+                        Image(systemName: "icloud.and.arrow.up")
+                    }
+                    Text(scanner.isUploadingToBackend ? "Uploading..." : "Upload to Backend")
+                }
                     .frame(maxWidth: .infinity)
             }
-            .buttonStyle(.bordered)
-            .disabled(!scanner.canExportJSON)
+            .buttonStyle(.borderedProminent)
+            .disabled(!scanner.canExportJSON || scanner.isUploadingToBackend)
+
+            if let uploadMessage = scanner.uploadMessage {
+                Text(uploadMessage)
+                    .font(.footnote.weight(.semibold))
+                    .foregroundStyle(uploadMessage.hasPrefix("Uploaded.") ? .green : .red)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
         }
     }
 

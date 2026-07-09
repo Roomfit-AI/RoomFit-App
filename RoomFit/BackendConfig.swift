@@ -1,9 +1,9 @@
 import Foundation
 
 enum BackendConfig {
-    // iPhone 실기기에서는 localhost가 아니라 Mac의 로컬 IP를 사용해야 합니다.
-    // Mac IP는 ipconfig getifaddr en0 명령으로 확인할 수 있습니다.
-    static let baseURL = URL(string: "http://192.168.35.179:8080")!
+    // 기본 백엔드는 Render 배포 서버를 사용합니다.
+    // 로컬 백엔드 테스트가 필요하면 baseURL을 Mac의 로컬 IP로 임시 변경할 수 있습니다.
+    static let baseURL = URL(string: "https://roomfit-backend.onrender.com")!
 
     static var roomUploadURL: URL {
         baseURL

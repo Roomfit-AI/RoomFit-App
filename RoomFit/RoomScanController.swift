@@ -9,9 +9,12 @@ final class RoomScanController: NSObject, ObservableObject {
     @Published var exportedFileURL: URL?
     @Published var jsonPreviewText: String?
     @Published var statusText = "Ready to scan."
+    @Published var isUploadingToBackend = false
+    @Published var uploadMessage: String?
 
     private weak var captureSession: RoomCaptureSession?
     private let roomBuilder = RoomBuilder(options: [.beautifyObjects])
+    private let uploadService = RoomUploadService()
 
     var canExportJSON: Bool {
         capturedRoom != nil || jsonPreviewText != nil
@@ -42,6 +45,7 @@ final class RoomScanController: NSObject, ObservableObject {
         capturedRoom = nil
         exportedFileURL = nil
         jsonPreviewText = nil
+        uploadMessage = nil
         isScanning = false  // 잠깐 false로 리셋
 
         // 약간의 딜레이 후 새 스캔 시작 (이전 세션 정리 시간 확보)
@@ -84,6 +88,7 @@ final class RoomScanController: NSObject, ObservableObject {
                 furniture: []
             )
         )
+        uploadMessage = nil
         statusText = "Mock room JSON is ready."
     }
 
@@ -102,9 +107,39 @@ final class RoomScanController: NSObject, ObservableObject {
                     furniture: []
                 )
             )
+            uploadMessage = nil
             statusText = "Manual room JSON is ready."
         } catch {
             showError(error)
+        }
+    }
+
+    func uploadJSONToBackend() {
+        guard !isUploadingToBackend else { return }
+
+        do {
+            let data = try exportJSONData()
+            isUploadingToBackend = true
+            uploadMessage = nil
+            statusText = "Uploading room JSON..."
+
+            Task { @MainActor in
+                do {
+                    let response = try await uploadService.uploadRoomJSON(data)
+                    isUploadingToBackend = false
+                    uploadMessage = "Uploaded. roomId: \(response.roomId)"
+                    statusText = "Uploaded. roomId: \(response.roomId)"
+                } catch {
+                    isUploadingToBackend = false
+                    let message = "Upload failed: \(error.localizedDescription)"
+                    uploadMessage = message
+                    statusText = message
+                }
+            }
+        } catch {
+            let message = "Upload failed: \(error.localizedDescription)"
+            uploadMessage = message
+            statusText = message
         }
     }
 
@@ -612,7 +647,7 @@ private struct RoomFitOpening: Codable {
 private struct RoomFitFurniture: Codable {
     let id: String
     let type: String
-    let label: Stringㅇ
+    let label: String
     let width: Double
     let depth: Double
     let height: Double
@@ -620,4 +655,3 @@ private struct RoomFitFurniture: Codable {
     let rotation: Double
     let status: String
 }
-

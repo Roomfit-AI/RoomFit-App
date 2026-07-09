@@ -211,8 +211,8 @@ final class RoomScanController: NSObject, ObservableObject {
         let frame = makeReferenceFrame(from: capturedRoom)
 
         let room = RoomFitRoom(
-            width: roundedMeasurement(frame?.width ?? roomWidthFallback(from: capturedRoom)),
-            depth: roundedMeasurement(frame?.depth ?? roomDepthFallback(from: capturedRoom)),
+            width: roundedOffset(frame?.width ?? roomWidthFallback(from: capturedRoom)),
+            depth: roundedOffset(frame?.depth ?? roomDepthFallback(from: capturedRoom)),
             height: roomHeight(from: capturedRoom)
         )
 
@@ -250,15 +250,41 @@ final class RoomScanController: NSObject, ObservableObject {
 
     private func makeReferenceFrame(from capturedRoom: CapturedRoom) -> RoomReferenceFrame? {
         if #available(iOS 17.0, *), let floor = capturedRoom.floors.first {
-            return referenceFrame(fromFloor: floor)
+            print("[RoomFit] floor.dimensions = \(floor.dimensions) (x,y,z)")
+            if let frame = referenceFrame(fromFloor: floor), frame.depth > 0.3, frame.width > 0.3 {
+                print("[RoomFit] using floor-derived frame: width=\(frame.width) depth=\(frame.depth)")
+                return frame
+            }
+            print("[RoomFit] floor-derived frame looked degenerate, falling back to walls")
+        } else {
+            print("[RoomFit] no floors available (pre-iOS17 or empty), using wall fallback")
         }
-        return referenceFrame(fromWalls: capturedRoom.walls)
+
+        let fallback = referenceFrame(fromWalls: capturedRoom.walls)
+        print("[RoomFit] wall count = \(capturedRoom.walls.count)")
+        for (index, wall) in capturedRoom.walls.enumerated() {
+            let t = wall.transform
+            print("[RoomFit] wall[\(index)] length(dimensions.x)=\(wall.dimensions.x) origin=(\(t.columns.3.x), \(t.columns.3.z))")
+        }
+        if let fallback {
+            print("[RoomFit] wall-derived frame: width=\(fallback.width) depth=\(fallback.depth)")
+        } else {
+            print("[RoomFit] wall-derived frame is nil (no walls at all)")
+        }
+        return fallback
     }
 
-    private func referenceFrame(fromFloor floor: CapturedRoom.Surface) -> RoomReferenceFrame {
+    /// `Surface.dimensions` always puts the surface's own normal/thickness in `.z` — for a
+    /// wall that's the (horizontal) thickness, for a floor it's the (near-zero) vertical
+    /// slab thickness. So a floor's *second* horizontal extent lives in `.y`, not `.z`, and
+    /// its local Y axis (not Z) is the one that's actually horizontal. Reading `.z`/`columns.2`
+    /// here previously collapsed room depth to ~0 on real scans.
+    /// If the result still looks degenerate, `makeReferenceFrame` falls back to the
+    /// wall-bounding-box method below instead of trusting this blindly.
+    private func referenceFrame(fromFloor floor: CapturedRoom.Surface) -> RoomReferenceFrame? {
         let transform = floor.transform
         let xAxis = normalizedXZ(transform.columns.0)
-        let zAxis = normalizedXZ(transform.columns.2)
+        let zAxis = normalizedXZ(transform.columns.1)
 
         return RoomReferenceFrame(
             originX: Double(transform.columns.3.x),
@@ -267,7 +293,7 @@ final class RoomScanController: NSObject, ObservableObject {
             xAxisX: xAxis.x, xAxisZ: xAxis.z,
             zAxisX: zAxis.x, zAxisZ: zAxis.z,
             width: Double(abs(floor.dimensions.x)),
-            depth: Double(abs(floor.dimensions.z))
+            depth: Double(abs(floor.dimensions.y))
         )
     }
 
@@ -351,7 +377,11 @@ final class RoomScanController: NSObject, ObservableObject {
         var degrees = (objectYaw - frameYaw) * 180.0 / .pi
         degrees = degrees.truncatingRemainder(dividingBy: 360)
         if degrees < 0 { degrees += 360 }
-        return roundedOffset(degrees)
+        // Rounding a value like 359.997 can land exactly on 360 — fold that back to 0
+        // so callers never see a rotation outside [0, 360).
+        var rounded = roundedOffset(degrees)
+        if rounded >= 360 { rounded -= 360 }
+        return rounded
     }
 
     private func wallSide(of wall: CapturedRoom.Surface, frame: RoomReferenceFrame) -> WallSide {
@@ -431,8 +461,8 @@ final class RoomScanController: NSObject, ObservableObject {
                 type: "door",
                 wall: side.rawValue,
                 offset: offset,
-                width: Double(door.dimensions.x),
-                height: Double(door.dimensions.y),
+                width: roundedOffset(Double(door.dimensions.x)),
+                height: roundedOffset(Double(door.dimensions.y)),
                 sillHeight: nil
             ))
         }
@@ -445,8 +475,8 @@ final class RoomScanController: NSObject, ObservableObject {
                 type: "window",
                 wall: side.rawValue,
                 offset: offset,
-                width: Double(window.dimensions.x),
-                height: Double(window.dimensions.y),
+                width: roundedOffset(Double(window.dimensions.x)),
+                height: roundedOffset(Double(window.dimensions.y)),
                 sillHeight: roundedOffset(max(0, bottomY - frame.originY))
             ))
         }
@@ -478,9 +508,9 @@ final class RoomScanController: NSObject, ObservableObject {
                 id: object.identifier.uuidString,
                 type: type,
                 label: koreanLabel(for: type),
-                width: footprint.width,
-                depth: footprint.depth,
-                height: Double(object.dimensions.y),
+                width: roundedOffset(footprint.width),
+                depth: roundedOffset(footprint.depth),
+                height: roundedOffset(Double(object.dimensions.y)),
                 position: RoomFitPosition(x: roundedOffset(corner.x), z: roundedOffset(corner.z)),
                 rotation: rotation,
                 status: "EXISTING"
@@ -547,15 +577,11 @@ final class RoomScanController: NSObject, ObservableObject {
             let sorted = sortedDimensions(from: $0.dimensions)
             return sorted.count >= 2 ? sorted[1] : (sorted.first ?? 0)
         }
-        return roundedMeasurement(wallHeights.max() ?? 2.4)
+        return roundedOffset(wallHeights.max() ?? 2.4)
     }
 
     private func sortedDimensions(from dimensions: simd_float3) -> [Double] {
         [Double(abs(dimensions.x)), Double(abs(dimensions.y)), Double(abs(dimensions.z))].sorted()
-    }
-
-    private func roundedMeasurement(_ value: Double) -> Double {
-        (value * 10).rounded() / 10
     }
 
     private func roundedOffset(_ value: Double) -> Double {

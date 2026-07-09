@@ -223,7 +223,7 @@ struct ContentView: View {
     }
 
     private func jsonPreview(_ text: String) -> some View {
-        ScrollView(.horizontal) {
+        ScrollView([.vertical, .horizontal]) {
             Text(text)
                 .font(.system(.caption, design: .monospaced))
                 .foregroundStyle(.primary)
@@ -231,7 +231,9 @@ struct ContentView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(12)
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
+        // Capped so the JSON panel can never grow past this and push the camera/3D
+        // preview off screen — it scrolls internally instead of expanding indefinitely.
+        .frame(maxWidth: .infinity, maxHeight: 220, alignment: .leading)
         .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 8))
         .overlay(
             RoundedRectangle(cornerRadius: 8)

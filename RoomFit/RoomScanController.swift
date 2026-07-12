@@ -208,10 +208,11 @@ final class RoomScanController: NSObject, ObservableObject {
             return nil
         }
 
-        // Best-effort only: if a side of the room has zero captured walls (e.g. an
-        // entryway deliberately left out of the scan), patch in a flat wall there so
-        // the model reads as an enclosed room instead of showing a hole. Any failure
-        // here just leaves the untouched RoomPlan export in place.
+        // Best-effort only: patch in flat wall segments over any uncovered stretch
+        // of the room's perimeter (a fully missing side, or just part of one — e.g.
+        // an entryway deliberately left out of the scan) so the model reads as an
+        // enclosed room instead of showing a hole. Any failure here just leaves the
+        // untouched RoomPlan export in place.
         if let frame = makeReferenceFrame(from: capturedRoom) {
             closeWallGaps(in: url, capturedRoom: capturedRoom, frame: frame)
         }
@@ -219,56 +220,120 @@ final class RoomScanController: NSObject, ObservableObject {
         return url
     }
 
-    /// Adds a synthetic wall plane spanning any room side RoomPlan captured no wall
-    /// surfaces for at all. Assumes the USDZ export shares the same world coordinate
-    /// space as `capturedRoom`'s own surface transforms (true for RoomPlan's own
-    /// `export(to:exportOptions:)`), since the patch is positioned using that frame.
+    /// Adds a synthetic wall plane over every uncovered stretch of the room's
+    /// perimeter — not just sides with zero walls, but gaps *between* or *around*
+    /// walls that were captured. Assumes the USDZ export shares the same world
+    /// coordinate space as `capturedRoom`'s own surface transforms (true for
+    /// RoomPlan's own `export(to:exportOptions:)`), since patches are positioned
+    /// using that frame.
     private func closeWallGaps(in usdzURL: URL, capturedRoom: CapturedRoom, frame: RoomReferenceFrame) {
-        let missingSides = missingWallSides(in: capturedRoom, frame: frame)
-        guard !missingSides.isEmpty else { return }
+        let gapsBySide = WallSide.allCases.map { side in
+            (side, coverageGaps(for: side, capturedRoom: capturedRoom, frame: frame))
+        }
+        guard gapsBySide.contains(where: { !$0.1.isEmpty }) else { return }
 
         guard let scene = try? SCNScene(url: usdzURL, options: nil) else { return }
         let wallHeight = roomHeight(from: capturedRoom)
 
-        for side in missingSides {
-            let (cornerA, cornerB) = cornerEndpoints(for: side, frame: frame)
-            let worldA = worldPoint(fromCornerX: cornerA.x, cornerZ: cornerA.z, frame: frame)
-            let worldB = worldPoint(fromCornerX: cornerB.x, cornerZ: cornerB.z, frame: frame)
+        for (side, gaps) in gapsBySide {
+            for gap in gaps {
+                let (cornerA, cornerB) = cornerPoints(for: side, start: gap.start, end: gap.end, frame: frame)
+                let worldA = worldPoint(fromCornerX: cornerA.x, cornerZ: cornerA.z, frame: frame)
+                let worldB = worldPoint(fromCornerX: cornerB.x, cornerZ: cornerB.z, frame: frame)
 
-            let dx = worldB.x - worldA.x
-            let dz = worldB.z - worldA.z
-            let length = (dx * dx + dz * dz).squareRoot()
-            guard length > 0.05 else { continue }
+                let dx = worldB.x - worldA.x
+                let dz = worldB.z - worldA.z
+                let length = (dx * dx + dz * dz).squareRoot()
+                guard length > 0.05 else { continue }
 
-            let wallGeometry = SCNPlane(width: CGFloat(length), height: CGFloat(wallHeight))
-            wallGeometry.firstMaterial?.diffuse.contents = UIColor(white: 0.85, alpha: 1)
-            wallGeometry.firstMaterial?.isDoubleSided = true
+                let wallGeometry = SCNPlane(width: CGFloat(length), height: CGFloat(wallHeight))
+                wallGeometry.firstMaterial?.diffuse.contents = UIColor(white: 0.85, alpha: 1)
+                wallGeometry.firstMaterial?.isDoubleSided = true
 
-            let wallNode = SCNNode(geometry: wallGeometry)
-            wallNode.position = SCNVector3(
-                Float((worldA.x + worldB.x) / 2),
-                Float(frame.originY + wallHeight / 2),
-                Float((worldA.z + worldB.z) / 2)
-            )
-            // SCNPlane's local +X ("width" axis) starts aligned with world +X;
-            // rotating by atan2(-dz, dx) around Y turns it to face the A→B direction
-            // (SceneKit's Y-rotation matrix sends +Z toward +X for positive angles).
-            wallNode.eulerAngles = SCNVector3(0, Float(atan2(-dz, dx)), 0)
+                let wallNode = SCNNode(geometry: wallGeometry)
+                wallNode.position = SCNVector3(
+                    Float((worldA.x + worldB.x) / 2),
+                    Float(frame.originY + wallHeight / 2),
+                    Float((worldA.z + worldB.z) / 2)
+                )
+                // SCNPlane's local +X ("width" axis) starts aligned with world +X;
+                // rotating by atan2(-dz, dx) around Y turns it to face the A→B
+                // direction (SceneKit's Y-rotation matrix sends +Z toward +X for
+                // positive angles).
+                wallNode.eulerAngles = SCNVector3(0, Float(atan2(-dz, dx)), 0)
 
-            scene.rootNode.addChildNode(wallNode)
+                scene.rootNode.addChildNode(wallNode)
+            }
         }
 
         try? scene.write(to: usdzURL, options: nil, delegate: nil, progressHandler: nil)
     }
 
-    /// The two corners of the room's [0, width] x [0, depth] rectangle, in that
-    /// corner-origin space, bounding the given side.
-    private func cornerEndpoints(for side: WallSide, frame: RoomReferenceFrame) -> (a: (x: Double, z: Double), b: (x: Double, z: Double)) {
+    /// Uncovered stretches along one side of the room's perimeter, in that side's
+    /// own [0, sideLength] space — gaps under 15cm are ignored as corner/measurement
+    /// noise rather than a real hole.
+    private func coverageGaps(
+        for side: WallSide,
+        capturedRoom: CapturedRoom,
+        frame: RoomReferenceFrame
+    ) -> [(start: Double, end: Double)] {
+        let sideLength = (side == .north || side == .south) ? frame.width : frame.depth
+        let minGap = 0.15
+
+        let intervals = capturedRoom.walls
+            .filter { wallSide(of: $0, frame: frame) == side }
+            .map { wallInterval($0, side: side, frame: frame) }
+            .sorted { $0.start < $1.start }
+
+        var gaps: [(start: Double, end: Double)] = []
+        var cursor: Double = 0
+        for interval in intervals {
+            let clampedStart = max(0, interval.start)
+            if clampedStart - cursor > minGap {
+                gaps.append((cursor, clampedStart))
+            }
+            cursor = max(cursor, min(interval.end, sideLength))
+        }
+        if sideLength - cursor > minGap {
+            gaps.append((cursor, sideLength))
+        }
+        return gaps
+    }
+
+    /// A wall's own span, projected onto its side's axis (x for north/south walls,
+    /// z for east/west), in the room's corner-origin space — used to find gaps
+    /// between/around individually-captured wall segments on the same side.
+    private func wallInterval(_ wall: CapturedRoom.Surface, side: WallSide, frame: RoomReferenceFrame) -> (start: Double, end: Double) {
+        let direction = normalizedXZ(wall.transform.columns.0)
+        let halfLength = Double(wall.dimensions.x) / 2
+        let centerX = Double(wall.transform.columns.3.x)
+        let centerZ = Double(wall.transform.columns.3.z)
+
+        let endpointA = cornerCoordinates(
+            worldX: centerX + direction.x * halfLength,
+            worldZ: centerZ + direction.z * halfLength,
+            frame: frame
+        )
+        let endpointB = cornerCoordinates(
+            worldX: centerX - direction.x * halfLength,
+            worldZ: centerZ - direction.z * halfLength,
+            frame: frame
+        )
+
+        let isNorthSouth = (side == .north || side == .south)
+        let a = isNorthSouth ? endpointA.x : endpointA.z
+        let b = isNorthSouth ? endpointB.x : endpointB.z
+        return (min(a, b), max(a, b))
+    }
+
+    /// Two points along one side of the room's [0, width] x [0, depth] rectangle,
+    /// in that corner-origin space, spanning [start, end] of that side's own axis.
+    private func cornerPoints(for side: WallSide, start: Double, end: Double, frame: RoomReferenceFrame) -> (a: (x: Double, z: Double), b: (x: Double, z: Double)) {
         switch side {
-        case .north: return ((0, 0), (frame.width, 0))
-        case .south: return ((0, frame.depth), (frame.width, frame.depth))
-        case .west: return ((0, 0), (0, frame.depth))
-        case .east: return ((frame.width, 0), (frame.width, frame.depth))
+        case .north: return ((start, 0), (end, 0))
+        case .south: return ((start, frame.depth), (end, frame.depth))
+        case .west: return ((0, start), (0, end))
+        case .east: return ((frame.width, start), (frame.width, end))
         }
     }
 
@@ -404,18 +469,18 @@ final class RoomScanController: NSObject, ObservableObject {
         logDebug("[RoomFit] room = width:\(room.width) depth:\(room.depth) height:\(room.height)")
 
         if let frame {
+            var anyGaps = false
             for side in WallSide.allCases {
                 let sideWalls = capturedRoom.walls.filter { wallSide(of: $0, frame: frame) == side }
                 let totalLength = sideWalls.reduce(0) { $0 + Double($1.dimensions.x) }
-                logDebug("[RoomFit] side \(side.rawValue): \(sideWalls.count) wall(s), total length \(roundedOffset(totalLength))")
+                let gaps = coverageGaps(for: side, capturedRoom: capturedRoom, frame: frame)
+                let gapDescription = gaps.isEmpty
+                    ? "no gaps"
+                    : "gap(s): " + gaps.map { "\(roundedOffset($0.start))-\(roundedOffset($0.end))" }.joined(separator: ", ")
+                logDebug("[RoomFit] side \(side.rawValue): \(sideWalls.count) wall(s), total length \(roundedOffset(totalLength)), \(gapDescription)")
+                anyGaps = anyGaps || !gaps.isEmpty
             }
-
-            let missingSides = missingWallSides(in: capturedRoom, frame: frame)
-            logDebug(
-                missingSides.isEmpty
-                    ? "[RoomFit] no missing sides — wall loop looks closed"
-                    : "[RoomFit] missing sides (no captured wall at all): \(missingSides.map(\.rawValue).sorted().joined(separator: ", "))"
-            )
+            logDebug(anyGaps ? "[RoomFit] gaps found — patched with synthetic wall(s) in the 3D export" : "[RoomFit] wall loop looks closed")
         } else {
             logDebug("[RoomFit] no reference frame — room size used a raw wall-dimension fallback")
         }
@@ -605,14 +670,6 @@ final class RoomScanController: NSObject, ObservableObject {
         } else {
             return center.x >= 0 ? .east : .west
         }
-    }
-
-    /// Sides of the room's rectangle with zero captured wall surfaces at all —
-    /// typically because that side wasn't scanned (e.g. an entryway left out on
-    /// purpose). Used both to patch the 3D preview and to flag it in debug info.
-    private func missingWallSides(in capturedRoom: CapturedRoom, frame: RoomReferenceFrame) -> Set<WallSide> {
-        let coveredSides = Set(capturedRoom.walls.map { wallSide(of: $0, frame: frame) })
-        return Set(WallSide.allCases).subtracting(coveredSides)
     }
 
     /// Finds the wall a door/window belongs to. Uses RoomPlan's own parent link on iOS 17+;

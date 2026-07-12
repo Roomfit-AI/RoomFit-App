@@ -28,11 +28,16 @@ final class RoomScanController: NSObject, ObservableObject {
     /// The finished scan exported as USDZ, ready to preview inline — shown in
     /// place of a flat capture image on the completed screen.
     @Published var lastModelURL: URL?
+    /// Human-readable trace of how this scan's room/wall/furniture geometry was
+    /// derived — shareable so it can be sent along when something looks off,
+    /// without needing Xcode's console attached.
+    @Published var lastDebugInfo: String?
 
     private weak var captureSession: RoomCaptureSession?
     private let roomBuilder = RoomBuilder(options: [.beautifyObjects])
     private let uploadService = RoomUploadService()
     private let uploadHistory: UploadedRoomStore
+    private var debugLogLines: [String] = []
 
     init(uploadHistory: UploadedRoomStore) {
         self.uploadHistory = uploadHistory
@@ -73,6 +78,8 @@ final class RoomScanController: NSObject, ObservableObject {
             try? FileManager.default.removeItem(at: lastModelURL)
         }
         lastModelURL = nil
+        lastDebugInfo = nil
+        debugLogLines = []
         isScanning = false  // 잠깐 false로 리셋
 
         // 약간의 딜레이 후 새 스캔 시작 (이전 세션 정리 시간 확보)
@@ -217,8 +224,7 @@ final class RoomScanController: NSObject, ObservableObject {
     /// space as `capturedRoom`'s own surface transforms (true for RoomPlan's own
     /// `export(to:exportOptions:)`), since the patch is positioned using that frame.
     private func closeWallGaps(in usdzURL: URL, capturedRoom: CapturedRoom, frame: RoomReferenceFrame) {
-        let coveredSides = Set(capturedRoom.walls.map { wallSide(of: $0, frame: frame) })
-        let missingSides = Set(WallSide.allCases).subtracting(coveredSides)
+        let missingSides = missingWallSides(in: capturedRoom, frame: frame)
         guard !missingSides.isEmpty else { return }
 
         guard let scene = try? SCNScene(url: usdzURL, options: nil) else { return }
@@ -287,6 +293,17 @@ final class RoomScanController: NSObject, ObservableObject {
         return url
     }
 
+    @discardableResult
+    func exportDebugInfo() throws -> URL {
+        guard let lastDebugInfo, let data = lastDebugInfo.data(using: .utf8) else {
+            throw ExportError.noRoomJSON
+        }
+        let directory = try scansDirectory()
+        let url = directory.appendingPathComponent(Self.debugFileName(), conformingTo: .plainText)
+        try data.write(to: url, options: .atomic)
+        return url
+    }
+
     func showError(_ error: Error) {
         statusText = "오류: \(error.localizedDescription)"
     }
@@ -326,6 +343,12 @@ final class RoomScanController: NSObject, ObservableObject {
         return "RoomScan-\(formatter.string(from: Date())).json"
     }
 
+    private static func debugFileName() -> String {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyyMMdd-HHmmss"
+        return "RoomScan-Debug-\(formatter.string(from: Date())).txt"
+    }
+
     private func parseMeasurement(from text: String, fieldName: String) throws -> Double {
         let normalized = text
             .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -350,6 +373,7 @@ final class RoomScanController: NSObject, ObservableObject {
     }
 
     private func makeRoomFitJSON(from capturedRoom: CapturedRoom) -> RoomFitRoomJSON {
+        debugLogLines = []
         let frame = makeReferenceFrame(from: capturedRoom)
 
         let room = RoomFitRoom(
@@ -357,12 +381,46 @@ final class RoomScanController: NSObject, ObservableObject {
             depth: roundedOffset(frame?.depth ?? roomDepthFallback(from: capturedRoom)),
             height: roomHeight(from: capturedRoom)
         )
+        let openings = extractOpenings(from: capturedRoom, frame: frame)
+        let furniture = extractFurniture(from: capturedRoom, frame: frame)
 
-        return RoomFitRoomJSON(
-            room: room,
-            openings: extractOpenings(from: capturedRoom, frame: frame),
-            furniture: extractFurniture(from: capturedRoom, frame: frame)
-        )
+        appendRoomSummary(room: room, capturedRoom: capturedRoom, frame: frame, openings: openings, furniture: furniture)
+        lastDebugInfo = debugLogLines.joined(separator: "\n")
+
+        return RoomFitRoomJSON(room: room, openings: openings, furniture: furniture)
+    }
+
+    /// Appends a top-level summary (per-side wall coverage, missing sides, item
+    /// counts) to `debugLogLines` after everything else has already logged its own
+    /// step-by-step trace — makes the shared debug text readable top-to-bottom.
+    private func appendRoomSummary(
+        room: RoomFitRoom,
+        capturedRoom: CapturedRoom,
+        frame: RoomReferenceFrame?,
+        openings: [RoomFitOpening],
+        furniture: [RoomFitFurniture]
+    ) {
+        logDebug("---")
+        logDebug("[RoomFit] room = width:\(room.width) depth:\(room.depth) height:\(room.height)")
+
+        if let frame {
+            for side in WallSide.allCases {
+                let sideWalls = capturedRoom.walls.filter { wallSide(of: $0, frame: frame) == side }
+                let totalLength = sideWalls.reduce(0) { $0 + Double($1.dimensions.x) }
+                logDebug("[RoomFit] side \(side.rawValue): \(sideWalls.count) wall(s), total length \(roundedOffset(totalLength))")
+            }
+
+            let missingSides = missingWallSides(in: capturedRoom, frame: frame)
+            logDebug(
+                missingSides.isEmpty
+                    ? "[RoomFit] no missing sides — wall loop looks closed"
+                    : "[RoomFit] missing sides (no captured wall at all): \(missingSides.map(\.rawValue).sorted().joined(separator: ", "))"
+            )
+        } else {
+            logDebug("[RoomFit] no reference frame — room size used a raw wall-dimension fallback")
+        }
+
+        logDebug("[RoomFit] openings: \(openings.count), furniture: \(furniture.count)")
     }
 
     // MARK: - Room-local coordinate frame
@@ -390,28 +448,33 @@ final class RoomScanController: NSObject, ObservableObject {
         case north, south, east, west
     }
 
+    private func logDebug(_ message: String) {
+        print(message)
+        debugLogLines.append(message)
+    }
+
     private func makeReferenceFrame(from capturedRoom: CapturedRoom) -> RoomReferenceFrame? {
         if #available(iOS 17.0, *), let floor = capturedRoom.floors.first {
-            print("[RoomFit] floor.dimensions = \(floor.dimensions) (x,y,z)")
+            logDebug("[RoomFit] floor.dimensions = \(floor.dimensions) (x,y,z)")
             if let frame = referenceFrame(fromFloor: floor), frame.depth > 0.3, frame.width > 0.3 {
-                print("[RoomFit] using floor-derived frame: width=\(frame.width) depth=\(frame.depth)")
+                logDebug("[RoomFit] using floor-derived frame: width=\(frame.width) depth=\(frame.depth)")
                 return frame
             }
-            print("[RoomFit] floor-derived frame looked degenerate, falling back to walls")
+            logDebug("[RoomFit] floor-derived frame looked degenerate, falling back to walls")
         } else {
-            print("[RoomFit] no floors available (pre-iOS17 or empty), using wall fallback")
+            logDebug("[RoomFit] no floors available (pre-iOS17 or empty), using wall fallback")
         }
 
         let fallback = referenceFrame(fromWalls: capturedRoom.walls)
-        print("[RoomFit] wall count = \(capturedRoom.walls.count)")
+        logDebug("[RoomFit] wall count = \(capturedRoom.walls.count)")
         for (index, wall) in capturedRoom.walls.enumerated() {
             let t = wall.transform
-            print("[RoomFit] wall[\(index)] length(dimensions.x)=\(wall.dimensions.x) origin=(\(t.columns.3.x), \(t.columns.3.z))")
+            logDebug("[RoomFit] wall[\(index)] length(dimensions.x)=\(wall.dimensions.x) origin=(\(t.columns.3.x), \(t.columns.3.z))")
         }
         if let fallback {
-            print("[RoomFit] wall-derived frame: width=\(fallback.width) depth=\(fallback.depth)")
+            logDebug("[RoomFit] wall-derived frame: width=\(fallback.width) depth=\(fallback.depth)")
         } else {
-            print("[RoomFit] wall-derived frame is nil (no walls at all)")
+            logDebug("[RoomFit] wall-derived frame is nil (no walls at all)")
         }
         return fallback
     }
@@ -544,6 +607,14 @@ final class RoomScanController: NSObject, ObservableObject {
         }
     }
 
+    /// Sides of the room's rectangle with zero captured wall surfaces at all —
+    /// typically because that side wasn't scanned (e.g. an entryway left out on
+    /// purpose). Used both to patch the 3D preview and to flag it in debug info.
+    private func missingWallSides(in capturedRoom: CapturedRoom, frame: RoomReferenceFrame) -> Set<WallSide> {
+        let coveredSides = Set(capturedRoom.walls.map { wallSide(of: $0, frame: frame) })
+        return Set(WallSide.allCases).subtracting(coveredSides)
+    }
+
     /// Finds the wall a door/window belongs to. Uses RoomPlan's own parent link on iOS 17+;
     /// falls back to nearest-wall-by-distance since `parentIdentifier` isn't available on iOS 16.
     private func resolveWall(for surface: CapturedRoom.Surface, walls: [CapturedRoom.Surface]) -> CapturedRoom.Surface? {
@@ -660,6 +731,14 @@ final class RoomScanController: NSObject, ObservableObject {
                 footprintWidth: roundedWidth, footprintDepth: roundedDepth,
                 roomWidth: roomWidth, roomDepth: roomDepth
             )
+            if abs(clampedPosition.x - corner.x) > 0.001 || abs(clampedPosition.z - corner.z) > 0.001 {
+                logDebug(
+                    "[RoomFit] clamped \(koreanLabel(for: type)) (\(object.identifier.uuidString.prefix(8))) "
+                        + "position (\(roundedOffset(corner.x)), \(roundedOffset(corner.z))) -> "
+                        + "(\(roundedOffset(clampedPosition.x)), \(roundedOffset(clampedPosition.z))) "
+                        + "to stay inside room bounds"
+                )
+            }
 
             return RoomFitFurniture(
                 id: object.identifier.uuidString,

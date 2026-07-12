@@ -301,13 +301,23 @@ struct ContentView: View {
 
             primaryActions
 
-            Button {
-                shareJSON()
-            } label: {
-                Text("JSON 공유")
+            HStack(spacing: 20) {
+                Button {
+                    shareJSON()
+                } label: {
+                    Text("JSON 공유")
+                }
+                .buttonStyle(LinkButtonStyle())
+                .disabled(!scanner.canExportJSON)
+
+                Button {
+                    shareDebugInfo()
+                } label: {
+                    Text("디버그 정보 공유")
+                }
+                .buttonStyle(LinkButtonStyle())
+                .disabled(scanner.lastDebugInfo == nil)
             }
-            .buttonStyle(LinkButtonStyle())
-            .disabled(!scanner.canExportJSON)
             .frame(maxWidth: .infinity)
         }
         .padding(20)
@@ -535,6 +545,15 @@ struct ContentView: View {
     private func shareJSON() {
         do {
             shareURL = try scanner.exportJSON()
+            isShowingShareSheet = true
+        } catch {
+            scanner.showError(error)
+        }
+    }
+
+    private func shareDebugInfo() {
+        do {
+            shareURL = try scanner.exportDebugInfo()
             isShowingShareSheet = true
         } catch {
             scanner.showError(error)

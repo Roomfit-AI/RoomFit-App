@@ -1,5 +1,6 @@
 import Foundation
 import RoomPlan
+import SceneKit
 import simd
 import UIKit
 
@@ -196,10 +197,83 @@ final class RoomScanController: NSObject, ObservableObject {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID().uuidString).usdz")
         do {
             try capturedRoom.export(to: url, exportOptions: .parametric)
-            return url
         } catch {
             return nil
         }
+
+        // Best-effort only: if a side of the room has zero captured walls (e.g. an
+        // entryway deliberately left out of the scan), patch in a flat wall there so
+        // the model reads as an enclosed room instead of showing a hole. Any failure
+        // here just leaves the untouched RoomPlan export in place.
+        if let frame = makeReferenceFrame(from: capturedRoom) {
+            closeWallGaps(in: url, capturedRoom: capturedRoom, frame: frame)
+        }
+
+        return url
+    }
+
+    /// Adds a synthetic wall plane spanning any room side RoomPlan captured no wall
+    /// surfaces for at all. Assumes the USDZ export shares the same world coordinate
+    /// space as `capturedRoom`'s own surface transforms (true for RoomPlan's own
+    /// `export(to:exportOptions:)`), since the patch is positioned using that frame.
+    private func closeWallGaps(in usdzURL: URL, capturedRoom: CapturedRoom, frame: RoomReferenceFrame) {
+        let coveredSides = Set(capturedRoom.walls.map { wallSide(of: $0, frame: frame) })
+        let missingSides = Set(WallSide.allCases).subtracting(coveredSides)
+        guard !missingSides.isEmpty else { return }
+
+        guard let scene = try? SCNScene(url: usdzURL, options: nil) else { return }
+        let wallHeight = roomHeight(from: capturedRoom)
+
+        for side in missingSides {
+            let (cornerA, cornerB) = cornerEndpoints(for: side, frame: frame)
+            let worldA = worldPoint(fromCornerX: cornerA.x, cornerZ: cornerA.z, frame: frame)
+            let worldB = worldPoint(fromCornerX: cornerB.x, cornerZ: cornerB.z, frame: frame)
+
+            let dx = worldB.x - worldA.x
+            let dz = worldB.z - worldA.z
+            let length = (dx * dx + dz * dz).squareRoot()
+            guard length > 0.05 else { continue }
+
+            let wallGeometry = SCNPlane(width: CGFloat(length), height: CGFloat(wallHeight))
+            wallGeometry.firstMaterial?.diffuse.contents = UIColor(white: 0.85, alpha: 1)
+            wallGeometry.firstMaterial?.isDoubleSided = true
+
+            let wallNode = SCNNode(geometry: wallGeometry)
+            wallNode.position = SCNVector3(
+                Float((worldA.x + worldB.x) / 2),
+                Float(frame.originY + wallHeight / 2),
+                Float((worldA.z + worldB.z) / 2)
+            )
+            // SCNPlane's local +X ("width" axis) starts aligned with world +X;
+            // rotating by atan2(-dz, dx) around Y turns it to face the A→B direction
+            // (SceneKit's Y-rotation matrix sends +Z toward +X for positive angles).
+            wallNode.eulerAngles = SCNVector3(0, Float(atan2(-dz, dx)), 0)
+
+            scene.rootNode.addChildNode(wallNode)
+        }
+
+        try? scene.write(to: usdzURL, options: nil, delegate: nil, progressHandler: nil)
+    }
+
+    /// The two corners of the room's [0, width] x [0, depth] rectangle, in that
+    /// corner-origin space, bounding the given side.
+    private func cornerEndpoints(for side: WallSide, frame: RoomReferenceFrame) -> (a: (x: Double, z: Double), b: (x: Double, z: Double)) {
+        switch side {
+        case .north: return ((0, 0), (frame.width, 0))
+        case .south: return ((0, frame.depth), (frame.width, frame.depth))
+        case .west: return ((0, 0), (0, frame.depth))
+        case .east: return ((frame.width, 0), (frame.width, frame.depth))
+        }
+    }
+
+    /// Inverse of `cornerCoordinates`/`localCoordinates`: maps a point in the room's
+    /// corner-origin (0...width, 0...depth) space back to world (x, z).
+    private func worldPoint(fromCornerX cornerX: Double, cornerZ: Double, frame: RoomReferenceFrame) -> (x: Double, z: Double) {
+        let localX = cornerX - frame.width / 2
+        let localZ = cornerZ - frame.depth / 2
+        let worldX = frame.originX + localX * frame.xAxisX + localZ * frame.zAxisX
+        let worldZ = frame.originZ + localX * frame.xAxisZ + localZ * frame.zAxisZ
+        return (worldX, worldZ)
     }
 
     @discardableResult
@@ -312,7 +386,7 @@ final class RoomScanController: NSObject, ObservableObject {
         let depth: Double
     }
 
-    private enum WallSide: String {
+    private enum WallSide: String, CaseIterable {
         case north, south, east, west
     }
 
@@ -557,6 +631,14 @@ final class RoomScanController: NSObject, ObservableObject {
     private func extractFurniture(from capturedRoom: CapturedRoom, frame: RoomReferenceFrame?) -> [RoomFitFurniture] {
         guard let frame else { return [] }
 
+        // Clamping must happen against the *rounded* numbers that actually get
+        // exported (this same rounding is what `room.width`/`room.depth` use in
+        // `makeRoomFitJSON`) — clamping against the raw unrounded frame left a
+        // ~5mm gap where footprint/position/room size, each rounded independently
+        // afterwards, could still combine to poke outside the reported room rectangle.
+        let roomWidth = roundedOffset(frame.width)
+        let roomDepth = roundedOffset(frame.depth)
+
         return capturedRoom.objects.compactMap { object -> RoomFitFurniture? in
             guard let type = mapCategory(object.category) else { return nil }
 
@@ -571,19 +653,52 @@ final class RoomScanController: NSObject, ObservableObject {
                 rawDepth: Double(object.dimensions.z),
                 rotationDegrees: rotation
             )
+            let roundedWidth = roundedOffset(footprint.width)
+            let roundedDepth = roundedOffset(footprint.depth)
+            let clampedPosition = clampFootprintCenter(
+                x: corner.x, z: corner.z,
+                footprintWidth: roundedWidth, footprintDepth: roundedDepth,
+                roomWidth: roomWidth, roomDepth: roomDepth
+            )
 
             return RoomFitFurniture(
                 id: object.identifier.uuidString,
                 type: type,
                 label: koreanLabel(for: type),
-                width: roundedOffset(footprint.width),
-                depth: roundedOffset(footprint.depth),
+                width: roundedWidth,
+                depth: roundedDepth,
                 height: roundedOffset(Double(object.dimensions.y)),
-                position: RoomFitPosition(x: roundedOffset(corner.x), z: roundedOffset(corner.z)),
+                position: RoomFitPosition(x: roundedOffset(clampedPosition.x), z: roundedOffset(clampedPosition.z)),
                 rotation: rotation,
                 status: "EXISTING"
             )
         }
+    }
+
+    /// Keeps an object's full footprint inside the room's own [0, width] x [0, depth]
+    /// rectangle, with a small inward margin so it sits just inside a wall rather
+    /// than exactly flush with it — flush-with-the-wall (e.g. position + half-width
+    /// == room width, bit-for-bit) can still fail a backend that re-derives the
+    /// same bound independently and compares with `>=` or hits float noise from the
+    /// JSON round-trip.
+    private func clampFootprintCenter(
+        x: Double, z: Double,
+        footprintWidth: Double, footprintDepth: Double,
+        roomWidth: Double, roomDepth: Double
+    ) -> (x: Double, z: Double) {
+        let margin = 0.01
+        let halfWidth = footprintWidth / 2
+        let halfDepth = footprintDepth / 2
+
+        let clampedX = footprintWidth + margin * 2 >= roomWidth
+            ? roomWidth / 2
+            : min(max(x, halfWidth + margin), roomWidth - halfWidth - margin)
+
+        let clampedZ = footprintDepth + margin * 2 >= roomDepth
+            ? roomDepth / 2
+            : min(max(z, halfDepth + margin), roomDepth - halfDepth - margin)
+
+        return (clampedX, clampedZ)
     }
 
     /// The backend's boundary/collision checks only handle 0/90/180/270 rotation and expect

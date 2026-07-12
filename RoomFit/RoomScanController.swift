@@ -24,6 +24,9 @@ final class RoomScanController: NSObject, ObservableObject {
     /// A snapshot of the finished 3D room model, taken once the scan completes —
     /// used as the thumbnail for this room in the uploaded-rooms list.
     @Published var lastThumbnail: UIImage?
+    /// The finished scan exported as USDZ, ready to preview inline — shown in
+    /// place of a flat capture image on the completed screen.
+    @Published var lastModelURL: URL?
 
     private weak var captureSession: RoomCaptureSession?
     private let roomBuilder = RoomBuilder(options: [.beautifyObjects])
@@ -65,6 +68,10 @@ final class RoomScanController: NSObject, ObservableObject {
         jsonPreviewText = nil
         uploadMessage = nil
         lastThumbnail = nil
+        if let lastModelURL {
+            try? FileManager.default.removeItem(at: lastModelURL)
+        }
+        lastModelURL = nil
         isScanning = false  // 잠깐 false로 리셋
 
         // 약간의 딜레이 후 새 스캔 시작 (이전 세션 정리 시간 확보)
@@ -670,6 +677,7 @@ extension RoomScanController: RoomCaptureSessionDelegate {
                 } else {
                     self.jsonPreviewText = nil
                 }
+                self.lastModelURL = self.exportUSDZIfPossible()
                 self.isScanning = false
                 self.phase = .completed
                 self.statusText = "스캔이 완료되었습니다. 업로드할 준비가 되었습니다."

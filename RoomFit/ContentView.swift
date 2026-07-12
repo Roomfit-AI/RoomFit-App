@@ -123,35 +123,16 @@ struct ContentView: View {
             case .completed:
                 EmptyView()
             }
-
-            VStack {
-                HStack {
-                    backToHomeButton
-                    Spacer()
-                }
-                Spacer()
-            }
-            .padding()
         }
         .safeAreaInset(edge: .bottom) {
             bottomBar
         }
         .onAppear {
-            if scanner.phase == .idle {
-                scanner.startScan()
-            }
-        }
-    }
-
-    private var backToHomeButton: some View {
-        Button {
-            requestGoHome()
-        } label: {
-            Image(systemName: "xmark")
-                .font(.system(size: 15, weight: .bold))
-                .foregroundStyle(.white)
-                .padding(10)
-                .background(.black.opacity(0.5), in: Circle())
+            // Always kick off a fresh scan on entry — gating this on
+            // `phase == .idle` meant returning here after a previous
+            // *completed* scan (e.g. tapped Home without rescanning) left
+            // that old completed sheet showing instead of starting over.
+            scanner.startScan()
         }
     }
 
@@ -183,13 +164,12 @@ struct ContentView: View {
                         scanner.startScan()
                     } label: {
                         Label("다시 시도하기", systemImage: "arrow.clockwise")
-                            .font(.headline)
-                            .frame(maxWidth: .infinity)
                     }
-                    .buttonStyle(.borderedProminent)
+                    .buttonStyle(PillButtonStyle(kind: .ghost))
 
                     Button("홈으로") { screen = .home }
-                        .foregroundStyle(.white.opacity(0.8))
+                        .font(.system(size: 13, weight: .bold))
+                        .foregroundStyle(.white.opacity(0.75))
                 }
                 .padding(.horizontal, 32)
                 .padding(.bottom, 40)
@@ -218,12 +198,18 @@ struct ContentView: View {
     /// Small, unobtrusive status indicator during an active scan — kept at the
     /// top so it never competes with the 3D room preview for space.
     private var scanningStatusPill: some View {
-        Label(scanner.statusText, systemImage: "dot.radiowaves.left.and.right")
-            .font(.caption.weight(.semibold))
-            .foregroundStyle(.white)
-            .padding(.horizontal, 12)
-            .padding(.vertical, 6)
-            .background(.black.opacity(0.5), in: Capsule())
+        HStack(spacing: 7) {
+            Circle()
+                .fill(Color(hex: 0xD65B3F))
+                .frame(width: 7, height: 7)
+            Text(scanner.statusText)
+        }
+        .font(.system(size: 12, weight: .bold))
+        .foregroundStyle(Color(hex: 0xF4F1E9))
+        .padding(.horizontal, 13)
+        .padding(.vertical, 7)
+        .background(Color.black.opacity(0.55), in: Capsule())
+        .overlay(Capsule().stroke(Color.white.opacity(0.14), lineWidth: 1))
     }
 
     @ViewBuilder
@@ -240,107 +226,119 @@ struct ContentView: View {
 
     /// While actively scanning, the only thing worth doing is stopping — extra
     /// buttons and the JSON preview previously stayed on screen here and covered
-    /// the 3D room preview.
+    /// the 3D room preview. Kept on a dark scrim (not the cream sheet) since it
+    /// sits directly over the live camera/3D capture.
     private var scanningBar: some View {
-        Button(role: .destructive) {
+        Button {
             scanner.stopScan()
         } label: {
             Label("스캔 멈추기", systemImage: "stop.fill")
-                .font(.headline)
-                .frame(maxWidth: .infinity)
         }
-        .buttonStyle(.borderedProminent)
-        .tint(.red)
-        .padding()
-        .background(.ultraThinMaterial)
+        .buttonStyle(PillButtonStyle(kind: .solid))
+        .padding(.horizontal, 20)
+        .padding(.top, 20)
+        .padding(.bottom, 30)
+        .background(
+            LinearGradient(colors: [.clear, Color.black.opacity(0.85)], startPoint: .top, endPoint: .bottom)
+        )
     }
 
     private var completedBar: some View {
-        VStack(spacing: 12) {
+        VStack(spacing: 14) {
             if let uploadMessage = scanner.uploadMessage {
                 Text(uploadMessage)
-                    .font(.footnote.weight(.semibold))
-                    .foregroundStyle(uploadMessage.hasPrefix("업로드 완료") ? .green : .red)
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(uploadMessage.hasPrefix("업로드 완료") ? Color.appSage : .red)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
+
+            heroThumbnail
 
             roomNameField
 
             primaryActions
 
-            goHomeButton
-
             Button {
                 shareJSON()
             } label: {
-                Label("JSON 공유", systemImage: "square.and.arrow.up")
-                    .font(.caption)
+                Text("JSON 공유")
             }
-            .buttonStyle(.plain)
-            .foregroundStyle(.secondary)
+            .buttonStyle(LinkButtonStyle())
             .disabled(!scanner.canExportJSON)
+            .frame(maxWidth: .infinity)
         }
-        .padding()
-        .background(.ultraThinMaterial)
+        .padding(20)
+        .background(Color.appCream)
+        .clipShape(RoundedCorner(radius: 28, corners: [.topLeft, .topRight]))
+    }
+
+    /// The finished scan's actual 3D model (rotate/zoom-able), or a placeholder
+    /// glyph if the export hasn't landed yet — a flat capture photo here would
+    /// just duplicate the live 3D view already visible behind this sheet.
+    private var heroThumbnail: some View {
+        Group {
+            if let modelURL = scanner.lastModelURL {
+                RoomModelPreview(url: modelURL)
+            } else {
+                IsometricRoomGlyph()
+            }
+        }
+        .frame(height: 220)
+        .frame(maxWidth: .infinity)
+        .background(Color.appFloor)
+        .clipShape(RoundedRectangle(cornerRadius: 16))
+        .overlay(RoundedRectangle(cornerRadius: 16).stroke(Color.appBorder, lineWidth: 1))
     }
 
     private var roomNameField: some View {
-        TextField("방 이름을 입력하세요 (예: 우리집 거실)", text: $roomName)
-            .textFieldStyle(.roundedBorder)
-            .frame(maxWidth: .infinity)
+        VStack(alignment: .leading, spacing: 6) {
+            Text("방 이름")
+                .font(.system(size: 11, weight: .bold))
+                .foregroundStyle(Color.appInkSoft)
+                .textCase(.uppercase)
+                .tracking(0.4)
+
+            TextField("우리집 거실", text: $roomName)
+                .textFieldStyle(.plain)
+                .padding(.vertical, 12)
+                .padding(.horizontal, 14)
+                .background(Color.appCard, in: RoundedRectangle(cornerRadius: 12))
+                .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.appBorder, lineWidth: 1))
+        }
     }
 
     /// Upload + Rescan are the two actions users need after a scan.
     private var primaryActions: some View {
-        HStack(spacing: 12) {
+        VStack(spacing: 10) {
             Button {
                 scanner.uploadJSONToBackend(name: roomName)
             } label: {
                 HStack {
                     if scanner.isUploadingToBackend {
-                        ProgressView()
+                        ProgressView().tint(Color.appCream)
                     } else {
                         Image(systemName: "icloud.and.arrow.up")
                     }
                     Text(scanner.isUploadingToBackend ? "업로드 중..." : "업로드하기")
                 }
-                .font(.headline)
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 4)
             }
-            .buttonStyle(.borderedProminent)
-            .controlSize(.large)
+            .buttonStyle(PillButtonStyle(kind: .solid))
             .disabled(!scanner.canExportJSON || scanner.isUploadingToBackend)
 
             Button {
                 requestRescan()
             } label: {
                 Label("다시 스캔하기", systemImage: "arrow.counterclockwise")
-                    .font(.headline)
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 4)
             }
-            .buttonStyle(.bordered)
-            .controlSize(.large)
-        }
-        .labelStyle(.titleAndIcon)
-    }
+            .buttonStyle(PillButtonStyle(kind: .ghost))
 
-    /// Explicitly bigger than the two actions above it, per feedback that the
-    /// previous small text-link "홈으로" was too easy to miss.
-    private var goHomeButton: some View {
-        Button {
-            requestGoHome()
-        } label: {
-            Label("홈으로", systemImage: "house.fill")
-                .font(.title3.weight(.semibold))
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 6)
+            Button {
+                requestGoHome()
+            } label: {
+                Label("홈으로", systemImage: "house.fill")
+            }
+            .buttonStyle(PillButtonStyle(kind: .ghost))
         }
-        .buttonStyle(.bordered)
-        .controlSize(.large)
-        // `.tint(.secondary)` rendered the border/text gray, which read as a
-        // disabled button — use the standard accent tint instead.
     }
 
     // MARK: - Unsupported-device flow (manual entry)
@@ -352,14 +350,15 @@ struct ContentView: View {
                     VStack(spacing: 16) {
                         Image(systemName: "iphone.slash")
                             .font(.system(size: 42, weight: .semibold))
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(Color.appInkSoft)
 
                         Text("이 기기에서는 RoomPlan을 지원하지 않습니다.")
-                            .font(.headline)
+                            .font(.system(size: 17, weight: .bold))
+                            .foregroundStyle(Color.appInk)
 
                         Text("테스트용 방 데이터를 만들거나, 방 크기를 직접 입력해 JSON을 생성할 수 있습니다.")
                             .font(.subheadline)
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(Color.appInkSoft)
                             .multilineTextAlignment(.center)
                             .padding(.horizontal)
 
@@ -367,9 +366,8 @@ struct ContentView: View {
                             scanner.generateMockRoomJSON()
                         } label: {
                             Label("테스트용 방 데이터 생성", systemImage: "curlybraces")
-                                .frame(maxWidth: .infinity)
                         }
-                        .buttonStyle(.borderedProminent)
+                        .buttonStyle(PillButtonStyle(kind: .solid))
 
                         manualInputCard
 
@@ -392,10 +390,11 @@ struct ContentView: View {
                         requestGoHome()
                     } label: {
                         Image(systemName: "xmark")
-                            .font(.system(size: 15, weight: .bold))
-                            .foregroundStyle(.secondary)
+                            .font(.system(size: 13, weight: .bold))
+                            .foregroundStyle(Color.appInkSoft)
                             .padding(10)
-                            .background(Color(.secondarySystemBackground), in: Circle())
+                            .background(Color.appCard, in: Circle())
+                            .overlay(Circle().stroke(Color.appBorder, lineWidth: 1))
                     }
                     Spacer()
                 }
@@ -404,15 +403,15 @@ struct ContentView: View {
             .padding()
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Color(.systemBackground))
+        .background(Color.appCream.ignoresSafeArea())
     }
 
     private var unsupportedExportBar: some View {
         VStack(spacing: 12) {
             if let uploadMessage = scanner.uploadMessage {
                 Text(uploadMessage)
-                    .font(.footnote.weight(.semibold))
-                    .foregroundStyle(uploadMessage.hasPrefix("업로드 완료") ? .green : .red)
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(uploadMessage.hasPrefix("업로드 완료") ? Color.appSage : .red)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
 
@@ -423,39 +422,34 @@ struct ContentView: View {
             } label: {
                 HStack {
                     if scanner.isUploadingToBackend {
-                        ProgressView()
+                        ProgressView().tint(Color.appCream)
                     } else {
                         Image(systemName: "icloud.and.arrow.up")
                     }
                     Text(scanner.isUploadingToBackend ? "업로드 중..." : "업로드하기")
                 }
-                .font(.headline)
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 4)
             }
-            .buttonStyle(.borderedProminent)
-            .controlSize(.large)
+            .buttonStyle(PillButtonStyle(kind: .solid))
             .disabled(!scanner.canExportJSON || scanner.isUploadingToBackend)
-            .labelStyle(.titleAndIcon)
 
             Button {
                 shareJSON()
             } label: {
-                Label("JSON 공유", systemImage: "square.and.arrow.up")
-                    .font(.caption)
+                Text("JSON 공유")
             }
-            .buttonStyle(.plain)
-            .foregroundStyle(.secondary)
+            .buttonStyle(LinkButtonStyle())
             .disabled(!scanner.canExportJSON)
         }
-        .padding()
-        .background(.ultraThinMaterial)
+        .padding(20)
+        .background(Color.appCream)
+        .overlay(Rectangle().frame(height: 1).foregroundStyle(Color.appBorder), alignment: .top)
     }
 
     private var manualInputCard: some View {
         VStack(spacing: 12) {
             Text("방 크기 직접 입력")
-                .font(.headline)
+                .font(.system(size: 15, weight: .bold))
+                .foregroundStyle(Color.appInk)
                 .frame(maxWidth: .infinity, alignment: .leading)
 
             HStack(spacing: 12) {
@@ -472,22 +466,26 @@ struct ContentView: View {
                 )
             } label: {
                 Label("방 데이터 생성", systemImage: "square.and.pencil")
-                    .frame(maxWidth: .infinity)
             }
-            .buttonStyle(.bordered)
+            .buttonStyle(PillButtonStyle(kind: .ghost))
         }
-        .padding()
-        .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 8))
+        .padding(16)
+        .background(Color.appCard, in: RoundedRectangle(cornerRadius: 16))
+        .overlay(RoundedRectangle(cornerRadius: 16).stroke(Color.appBorder, lineWidth: 1))
     }
 
     private func measurementField(title: String, text: Binding<String>) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             Text(title)
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.secondary)
+                .font(.system(size: 11, weight: .bold))
+                .foregroundStyle(Color.appInkSoft)
 
             TextField(title, text: text)
-                .textFieldStyle(.roundedBorder)
+                .textFieldStyle(.plain)
+                .padding(.vertical, 10)
+                .padding(.horizontal, 12)
+                .background(Color.appCream, in: RoundedRectangle(cornerRadius: 10))
+                .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.appBorder, lineWidth: 1))
                 .keyboardType(.decimalPad)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -497,7 +495,7 @@ struct ContentView: View {
         ScrollView([.vertical, .horizontal]) {
             Text(text)
                 .font(.system(.caption, design: .monospaced))
-                .foregroundStyle(.primary)
+                .foregroundStyle(Color.appInk)
                 .textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(12)
@@ -505,11 +503,8 @@ struct ContentView: View {
         // Capped so the JSON panel can never grow past this and push the camera/3D
         // preview off screen — it scrolls internally instead of expanding indefinitely.
         .frame(maxWidth: .infinity, maxHeight: 220, alignment: .leading)
-        .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 8))
-        .overlay(
-            RoundedRectangle(cornerRadius: 8)
-                .stroke(Color(.separator), lineWidth: 0.5)
-        )
+        .background(Color.appCard, in: RoundedRectangle(cornerRadius: 12))
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.appBorder, lineWidth: 1))
     }
 
     private func shareJSON() {
@@ -535,25 +530,25 @@ private struct HomeView: View {
                 // Nothing to list yet — center the header+button as a group
                 // instead of pinning it to the top with empty space below.
                 VStack(spacing: 28) {
+                    topNav
                     Spacer()
-                    headerSection
-                    startButton
+                    heroHeading
                     Spacer()
                 }
                 .padding(.horizontal, 24)
             } else {
-                VStack(spacing: 28) {
-                    headerSection
-                        .padding(.top, 40)
-                    startButton
-                    uploadedRoomsSection
+                VStack(alignment: .leading, spacing: 22) {
+                    topNav
+                        .padding(.top, 6)
+                    heading
+                    roomsGrid
                 }
                 .padding(.horizontal, 24)
                 .padding(.bottom, 16)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Color(.systemBackground).ignoresSafeArea())
+        .background(Color.appCream.ignoresSafeArea())
         .sheet(item: $selectedRecord) { record in
             RoomDetailView(
                 record: record,
@@ -579,14 +574,32 @@ private struct HomeView: View {
         }
     }
 
-    private var headerSection: some View {
-        VStack(spacing: 12) {
-            Image(systemName: "cube.transparent.fill")
-                .font(.system(size: 48, weight: .semibold))
-                .foregroundStyle(.tint)
+    // MARK: - Nav
 
-            Text("RoomFit Scanner")
-                .font(.largeTitle.bold())
+    private var topNav: some View {
+        HStack {
+            Text("RoomFit")
+                .font(.system(size: 17, weight: .heavy))
+                .foregroundStyle(Color.appInk)
+
+            Spacer()
+
+            Button(action: onStart) {
+                Text(isRoomPlanSupported ? "스캔 시작" : "시작하기")
+            }
+            .buttonStyle(PillButtonStyle(kind: .solid, isBlock: false))
+        }
+    }
+
+    // MARK: - Empty state
+
+    private var heroHeading: some View {
+        VStack(spacing: 12) {
+            IsometricRoomGlyph()
+                .frame(width: 88, height: 72)
+
+            Text("아직 스캔한 방이 없어요")
+                .font(.system(size: 24, weight: .heavy))
                 .multilineTextAlignment(.center)
 
             Text(
@@ -594,86 +607,74 @@ private struct HomeView: View {
                     ? "스캐너를 통해 당신의 방을 3D 데이터로 저장하세요"
                     : "이 기기는 카메라 스캔을 지원하지 않아 방 크기를 직접 입력할 수 있어요"
             )
-            .font(.subheadline)
-            .foregroundStyle(.secondary)
+            .font(.system(size: 14))
+            .foregroundStyle(Color.appInkSoft)
             .multilineTextAlignment(.center)
             .padding(.horizontal, 24)
         }
     }
 
-    private var startButton: some View {
-        Button(action: onStart) {
-            Label(isRoomPlanSupported ? "스캔 시작하기" : "시작하기", systemImage: "play.fill")
-                .font(.title3.weight(.semibold))
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 8)
-        }
-        .buttonStyle(.borderedProminent)
-        .controlSize(.large)
-    }
+    // MARK: - Room list state
 
-    private var uploadedRoomsSection: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("업로드한 방")
-                .font(.headline)
-                .frame(maxWidth: .infinity, alignment: .leading)
+    private var heading: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text("스캔한 공간을\n확인하세요")
+                .font(.system(size: 24, weight: .heavy))
+                .lineSpacing(2)
+                .fixedSize(horizontal: false, vertical: true)
 
-            ScrollView {
-                LazyVStack(spacing: 0) {
-                    ForEach(uploadHistory.records) { record in
-                        uploadedRoomRow(record)
-
-                        if record.id != uploadHistory.records.last?.id {
-                            Divider().padding(.leading, 68)
-                        }
-                    }
-                }
-            }
-            .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 14))
+            Text("업로드한 방을 다시 보거나, 새로운 공간을 스캔해보세요.")
+                .font(.system(size: 13))
+                .foregroundStyle(Color.appInkSoft)
         }
     }
 
-    private func uploadedRoomRow(_ record: UploadedRoomRecord) -> some View {
-        HStack(spacing: 4) {
-            Button {
-                selectedRecord = record
-            } label: {
-                HStack(spacing: 12) {
-                    thumbnailView(record)
+    private let gridColumns = [GridItem(.flexible(), spacing: 12), GridItem(.flexible(), spacing: 12)]
 
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(record.name)
-                            .font(.subheadline.weight(.semibold))
-                            .lineLimit(1)
-
-                        Text(record.uploadedAt, style: .date)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-
-                    Spacer()
-
-                    Image(systemName: "chevron.right")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(.tertiary)
+    private var roomsGrid: some View {
+        ScrollView {
+            LazyVGrid(columns: gridColumns, spacing: 12) {
+                ForEach(uploadHistory.records) { record in
+                    roomCard(record)
                 }
-                .contentShape(Rectangle())
             }
-            .buttonStyle(.plain)
+            .padding(.bottom, 24)
+        }
+    }
 
-            Button {
+    private func roomCard(_ record: UploadedRoomRecord) -> some View {
+        Button {
+            selectedRecord = record
+        } label: {
+            VStack(alignment: .leading, spacing: 8) {
+                thumbnailView(record)
+                    .frame(height: 84)
+                    .frame(maxWidth: .infinity)
+                    .background(Color.appFloor)
+                    .clipShape(RoundedRectangle(cornerRadius: 10))
+
+                Text(record.name)
+                    .font(.system(size: 13, weight: .bold))
+                    .foregroundStyle(Color.appInk)
+                    .lineLimit(1)
+
+                Text(record.uploadedAt, style: .date)
+                    .font(.system(size: 11))
+                    .foregroundStyle(Color.appInkSoft)
+            }
+            .padding(10)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color.appCard, in: RoundedRectangle(cornerRadius: 16))
+            .overlay(RoundedRectangle(cornerRadius: 16).stroke(Color.appBorder, lineWidth: 1))
+        }
+        .buttonStyle(.plain)
+        .contextMenu {
+            Button(role: .destructive) {
                 recordPendingDelete = record
             } label: {
-                Image(systemName: "trash")
-                    .font(.subheadline)
-                    .foregroundStyle(.red)
-                    .padding(10)
-                    .contentShape(Rectangle())
+                Label("삭제", systemImage: "trash")
             }
-            .buttonStyle(.plain)
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 4)
     }
 
     private func thumbnailView(_ record: UploadedRoomRecord) -> some View {
@@ -683,15 +684,9 @@ private struct HomeView: View {
                     .resizable()
                     .scaledToFill()
             } else {
-                ZStack {
-                    Color(.tertiarySystemBackground)
-                    Image(systemName: "cube.transparent")
-                        .foregroundStyle(.secondary)
-                }
+                IsometricRoomGlyph()
             }
         }
-        .frame(width: 44, height: 44)
-        .clipShape(RoundedRectangle(cornerRadius: 10))
     }
 }
 
@@ -718,9 +713,9 @@ private struct RoomDetailView: View {
                     VStack(spacing: 12) {
                         Image(systemName: "cube.transparent")
                             .font(.system(size: 48))
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(Color.appInkSoft)
                         Text("저장된 미리보기가 없습니다.")
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(Color.appInkSoft)
                     }
                 }
             }

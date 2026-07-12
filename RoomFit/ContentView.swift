@@ -121,7 +121,11 @@ struct ContentView: View {
                 }
                 .padding()
             case .completed:
-                EmptyView()
+                // The raw capture view keeps rendering its frozen 3D mesh
+                // underneath — cover it with the real completed layout so
+                // the model preview fills this space properly instead of
+                // leaving it as dead space above the bottom sheet.
+                completedContent
             }
         }
         .safeAreaInset(edge: .bottom) {
@@ -243,6 +247,47 @@ struct ContentView: View {
         )
     }
 
+    /// Fills the space above the bottom sheet — previously left as dead flat
+    /// color once the raw capture view was hidden. A small heading plus the
+    /// actual 3D model (rotate/zoom-able) balances that space instead of
+    /// squeezing the preview into a small card down in the sheet.
+    private var completedContent: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("스캔 완료")
+                    .font(.system(size: 22, weight: .heavy))
+                    .foregroundStyle(Color.appInk)
+                Text("3D 모델을 확인해보세요")
+                    .font(.system(size: 13))
+                    .foregroundStyle(Color.appInkSoft)
+            }
+            .padding(.horizontal, 20)
+            .padding(.top, 20)
+
+            modelPreview
+                .padding(.horizontal, 20)
+                .padding(.bottom, 20)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .background(Color.appCream.ignoresSafeArea())
+    }
+
+    /// The finished scan's actual 3D model (rotate/zoom-able), or a placeholder
+    /// glyph if the export hasn't landed yet.
+    private var modelPreview: some View {
+        Group {
+            if let modelURL = scanner.lastModelURL {
+                RoomModelPreview(url: modelURL)
+            } else {
+                IsometricRoomGlyph()
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color.appFloor)
+        .clipShape(RoundedRectangle(cornerRadius: 20))
+        .overlay(RoundedRectangle(cornerRadius: 20).stroke(Color.appBorder, lineWidth: 1))
+    }
+
     private var completedBar: some View {
         VStack(spacing: 14) {
             if let uploadMessage = scanner.uploadMessage {
@@ -251,8 +296,6 @@ struct ContentView: View {
                     .foregroundStyle(uploadMessage.hasPrefix("업로드 완료") ? Color.appSage : .red)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
-
-            heroThumbnail
 
             roomNameField
 
@@ -270,24 +313,6 @@ struct ContentView: View {
         .padding(20)
         .background(Color.appCream)
         .clipShape(RoundedCorner(radius: 28, corners: [.topLeft, .topRight]))
-    }
-
-    /// The finished scan's actual 3D model (rotate/zoom-able), or a placeholder
-    /// glyph if the export hasn't landed yet — a flat capture photo here would
-    /// just duplicate the live 3D view already visible behind this sheet.
-    private var heroThumbnail: some View {
-        Group {
-            if let modelURL = scanner.lastModelURL {
-                RoomModelPreview(url: modelURL)
-            } else {
-                IsometricRoomGlyph()
-            }
-        }
-        .frame(height: 220)
-        .frame(maxWidth: .infinity)
-        .background(Color.appFloor)
-        .clipShape(RoundedRectangle(cornerRadius: 16))
-        .overlay(RoundedRectangle(cornerRadius: 16).stroke(Color.appBorder, lineWidth: 1))
     }
 
     private var roomNameField: some View {
@@ -533,6 +558,8 @@ private struct HomeView: View {
                     topNav
                     Spacer()
                     heroHeading
+                    startButton
+                        .frame(maxWidth: 280)
                     Spacer()
                 }
                 .padding(.horizontal, 24)
@@ -614,6 +641,13 @@ private struct HomeView: View {
         }
     }
 
+    private var startButton: some View {
+        Button(action: onStart) {
+            Label(isRoomPlanSupported ? "스캔 시작하기" : "시작하기", systemImage: "play.fill")
+        }
+        .buttonStyle(PillButtonStyle(kind: .solid))
+    }
+
     // MARK: - Room list state
 
     private var heading: some View {
@@ -637,6 +671,7 @@ private struct HomeView: View {
                 ForEach(uploadHistory.records) { record in
                     roomCard(record)
                 }
+                newScanCard
             }
             .padding(.bottom, 24)
         }
@@ -675,6 +710,31 @@ private struct HomeView: View {
                 Label("삭제", systemImage: "trash")
             }
         }
+    }
+
+    private var newScanCard: some View {
+        Button(action: onStart) {
+            VStack(spacing: 8) {
+                Circle()
+                    .strokeBorder(Color.appInkSoft, lineWidth: 1.5)
+                    .frame(width: 30, height: 30)
+                    .overlay(
+                        Image(systemName: "plus")
+                            .font(.system(size: 13, weight: .bold))
+                            .foregroundStyle(Color.appInkSoft)
+                    )
+
+                Text("새로 스캔하기")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(Color.appInkSoft)
+            }
+            .frame(maxWidth: .infinity, minHeight: 140)
+            .background(
+                RoundedRectangle(cornerRadius: 16)
+                    .strokeBorder(Color.appBorder, style: StrokeStyle(lineWidth: 1, dash: [5, 4]))
+            )
+        }
+        .buttonStyle(.plain)
     }
 
     private func thumbnailView(_ record: UploadedRoomRecord) -> some View {

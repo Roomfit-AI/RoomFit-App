@@ -591,7 +591,7 @@ private struct HomeView: View {
 
             Text(
                 isRoomPlanSupported
-                    ? "3D 데이터로 저장하세요"
+                    ? "스캐너를 통해 당신의 방을 3D 데이터로 저장하세요"
                     : "이 기기는 카메라 스캔을 지원하지 않아 방 크기를 직접 입력할 수 있어요"
             )
             .font(.subheadline)

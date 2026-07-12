@@ -12,6 +12,8 @@
 	<string>6.0</string>
 	<key>CFBundleName</key>
 	<string>$(PRODUCT_NAME)</string>
+	<key>CFBundleDisplayName</key>
+	<string>RoomFit Scanner</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
@@ -19,9 +21,9 @@
 	<key>CFBundleVersion</key>
 	<string>$(CURRENT_PROJECT_VERSION)</string>
 	<key>NSCameraUsageDescription</key>
-	<string>RoomFit uses the camera and LiDAR sensor to scan rooms with RoomPlan.</string>
+	<string>방을 스캔하기 위해 카메라와 라이다 센서를 사용합니다.</string>
 	<key>NSLocalNetworkUsageDescription</key>
-	<string>RoomFit connects to the RoomFit backend running on your Mac for local development uploads.</string>
+	<string>스캔한 방 데이터를 업로드하기 위해 로컬 네트워크에 연결합니다.</string>
 	<!-- Development only: allow HTTP requests to a backend running on the local network. -->
 	<key>NSAppTransportSecurity</key>
 	<dict>

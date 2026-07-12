@@ -1,20 +1,38 @@
 import Foundation
 import RoomPlan
 import simd
+import UIKit
+
+enum ScanPhase {
+    case idle
+    case preparing
+    case scanning
+    case processing
+    case completed
+}
 
 @MainActor
 final class RoomScanController: NSObject, ObservableObject {
     @Published var isScanning = false
+    @Published var phase: ScanPhase = .idle
     @Published var capturedRoom: CapturedRoom?
     @Published var exportedFileURL: URL?
     @Published var jsonPreviewText: String?
-    @Published var statusText = "Ready to scan."
+    @Published var statusText = "스캔할 준비가 되었습니다."
     @Published var isUploadingToBackend = false
     @Published var uploadMessage: String?
+    /// A snapshot of the finished 3D room model, taken once the scan completes —
+    /// used as the thumbnail for this room in the uploaded-rooms list.
+    @Published var lastThumbnail: UIImage?
 
     private weak var captureSession: RoomCaptureSession?
     private let roomBuilder = RoomBuilder(options: [.beautifyObjects])
     private let uploadService = RoomUploadService()
+    private let uploadHistory: UploadedRoomStore
+
+    init(uploadHistory: UploadedRoomStore) {
+        self.uploadHistory = uploadHistory
+    }
 
     var canExportJSON: Bool {
         capturedRoom != nil || jsonPreviewText != nil
@@ -27,12 +45,12 @@ final class RoomScanController: NSObject, ObservableObject {
 
     func startScan() {
         guard RoomCaptureSession.isSupported else {
-            statusText = "RoomPlan is not supported on this device."
+            statusText = "이 기기에서는 RoomPlan을 지원하지 않습니다."
             return
         }
 
         guard let captureSession else {
-            statusText = "Scanner is not ready yet."
+            statusText = "스캐너가 아직 준비되지 않았습니다."
             return
         }
 
@@ -46,10 +64,12 @@ final class RoomScanController: NSObject, ObservableObject {
         exportedFileURL = nil
         jsonPreviewText = nil
         uploadMessage = nil
+        lastThumbnail = nil
         isScanning = false  // 잠깐 false로 리셋
 
         // 약간의 딜레이 후 새 스캔 시작 (이전 세션 정리 시간 확보)
-        statusText = "Preparing scanner..."
+        phase = .preparing
+        statusText = "스캐너를 준비하는 중..."
         Task { @MainActor in
             try? await Task.sleep(for: .milliseconds(500))
 
@@ -57,7 +77,8 @@ final class RoomScanController: NSObject, ObservableObject {
             configuration.isCoachingEnabled = true
             captureSession.run(configuration: configuration)
             isScanning = true
-            statusText = "Scanning..."
+            phase = .scanning
+            statusText = "스캔 중..."
         }
     }
 
@@ -65,14 +86,15 @@ final class RoomScanController: NSObject, ObservableObject {
         guard isScanning else { return }
 
         isScanning = false  // 먼저 false로 바꿔서 UI 반응 즉시
-        statusText = "Processing scan..."
+        phase = .processing
+        statusText = "스캔 결과를 처리하는 중..."
         captureSession?.stop()
     }
 
     func saveJSON() {
         do {
             let url = try exportJSON()
-            statusText = "Saved: \(url.lastPathComponent)"
+            statusText = "저장됨: \(url.lastPathComponent)"
         } catch {
             showError(error)
         }
@@ -89,14 +111,15 @@ final class RoomScanController: NSObject, ObservableObject {
             )
         )
         uploadMessage = nil
-        statusText = "Mock room JSON is ready."
+        phase = .completed
+        statusText = "테스트용 방 데이터가 준비되었습니다."
     }
 
     func createManualRoomJSON(widthText: String, depthText: String, heightText: String) {
         do {
-            let width = try parseMeasurement(from: widthText, fieldName: "Room width")
-            let depth = try parseMeasurement(from: depthText, fieldName: "Room depth")
-            let height = try parseMeasurement(from: heightText, fieldName: "Room height")
+            let width = try parseMeasurement(from: widthText, fieldName: "방 너비")
+            let depth = try parseMeasurement(from: depthText, fieldName: "방 깊이")
+            let height = try parseMeasurement(from: heightText, fieldName: "방 높이")
 
             capturedRoom = nil
             exportedFileURL = nil
@@ -108,38 +131,67 @@ final class RoomScanController: NSObject, ObservableObject {
                 )
             )
             uploadMessage = nil
-            statusText = "Manual room JSON is ready."
+            phase = .completed
+            statusText = "입력한 방 데이터가 준비되었습니다."
         } catch {
             showError(error)
         }
     }
 
-    func uploadJSONToBackend() {
+    func uploadJSONToBackend(name: String) {
         guard !isUploadingToBackend else { return }
 
+        let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let finalName = trimmedName.isEmpty ? "이름 없는 방" : trimmedName
+        let thumbnail = lastThumbnail
+        let modelSourceURL = exportUSDZIfPossible()
+
         do {
-            let data = try exportJSONData()
+            let data = try exportJSONData(name: finalName)
             isUploadingToBackend = true
             uploadMessage = nil
-            statusText = "Uploading room JSON..."
+            statusText = "방 데이터를 업로드하는 중..."
 
             Task { @MainActor in
                 do {
                     let response = try await uploadService.uploadRoomJSON(data)
                     isUploadingToBackend = false
-                    uploadMessage = "Uploaded. roomId: \(response.roomId)"
-                    statusText = "Uploaded. roomId: \(response.roomId)"
+                    uploadMessage = "업로드 완료. roomId: \(response.roomId)"
+                    statusText = "업로드가 완료되었습니다."
+                    uploadHistory.add(
+                        roomId: response.roomId,
+                        name: response.name ?? finalName,
+                        thumbnail: thumbnail,
+                        modelSourceURL: modelSourceURL
+                    )
                 } catch {
                     isUploadingToBackend = false
-                    let message = "Upload failed: \(error.localizedDescription)"
+                    let message = "업로드 실패: \(error.localizedDescription)"
                     uploadMessage = message
                     statusText = message
+                    if let modelSourceURL { try? FileManager.default.removeItem(at: modelSourceURL) }
                 }
             }
         } catch {
-            let message = "Upload failed: \(error.localizedDescription)"
+            let message = "업로드 실패: \(error.localizedDescription)"
             uploadMessage = message
             statusText = message
+            if let modelSourceURL { try? FileManager.default.removeItem(at: modelSourceURL) }
+        }
+    }
+
+    /// Exports the finished RoomPlan capture as a USDZ so the uploaded-rooms
+    /// list can show an interactive 3D preview later. Returns nil for
+    /// mock/manual entries (no CapturedRoom) or if the export itself fails.
+    private func exportUSDZIfPossible() -> URL? {
+        guard let capturedRoom else { return nil }
+
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID().uuidString).usdz")
+        do {
+            try capturedRoom.export(to: url, exportOptions: .parametric)
+            return url
+        } catch {
+            return nil
         }
     }
 
@@ -155,7 +207,7 @@ final class RoomScanController: NSObject, ObservableObject {
     }
 
     func showError(_ error: Error) {
-        statusText = "Error: \(error.localizedDescription)"
+        statusText = "오류: \(error.localizedDescription)"
     }
 
     private func scansDirectory() throws -> URL {
@@ -170,12 +222,21 @@ final class RoomScanController: NSObject, ObservableObject {
         return scansDirectory
     }
 
-    private func exportJSONData() throws -> Data {
-        if let jsonPreviewText, let data = jsonPreviewText.data(using: .utf8) {
-            return data
+    private func exportJSONData(name: String? = nil) throws -> Data {
+        guard let jsonPreviewText, let baseData = jsonPreviewText.data(using: .utf8) else {
+            throw ExportError.noRoomJSON
         }
 
-        throw ExportError.noRoomJSON
+        guard let name else { return baseData }
+
+        // The room name is only known once the user is ready to upload, well after
+        // the RoomFitRoomJSON string was generated — so it's spliced in here rather
+        // than threaded through every JSON-generation call site.
+        guard var object = try? JSONSerialization.jsonObject(with: baseData) as? [String: Any] else {
+            return baseData
+        }
+        object["name"] = name
+        return (try? JSONSerialization.data(withJSONObject: object, options: [.prettyPrinted, .sortedKeys])) ?? baseData
     }
 
     private static func fileName() -> String {
@@ -596,6 +657,7 @@ extension RoomScanController: RoomCaptureSessionDelegate {
 
             if let error {
                 self.isScanning = false
+                self.phase = .idle
                 self.showError(error)
                 return
             }
@@ -609,9 +671,11 @@ extension RoomScanController: RoomCaptureSessionDelegate {
                     self.jsonPreviewText = nil
                 }
                 self.isScanning = false
-                self.statusText = "Scan complete. JSON export is ready."
+                self.phase = .completed
+                self.statusText = "스캔이 완료되었습니다. 업로드할 준비가 되었습니다."
             } catch {
                 self.isScanning = false
+                self.phase = .idle
                 self.showError(error)
             }
         }
@@ -628,9 +692,9 @@ private enum ExportError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .noRoomJSON:
-            return "No room JSON is available."
+            return "사용 가능한 방 데이터가 없습니다."
         case .invalidMeasurement(let fieldName):
-            return "\(fieldName) must be a number greater than 0."
+            return "\(fieldName)은(는) 0보다 큰 숫자여야 합니다."
         }
     }
 }

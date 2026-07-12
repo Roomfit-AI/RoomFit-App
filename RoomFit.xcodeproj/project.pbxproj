@@ -14,6 +14,9 @@
 		4B0473A42C3D120100000001 /* ShareSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4B04739F2C3D120100000001 /* ShareSheet.swift */; };
 		4B2000022C3D130100000001 /* BackendConfig.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4B2000002C3D130100000001 /* BackendConfig.swift */; };
 		4B2000032C3D130100000001 /* RoomUploadService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4B2000012C3D130100000001 /* RoomUploadService.swift */; };
+		4B2000062C3D130100000001 /* UploadedRoomStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4B2000052C3D130100000001 /* UploadedRoomStore.swift */; };
+		4B2000082C3D130100000001 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 4B2000072C3D130100000001 /* Assets.xcassets */; };
+		4B2000092C3D130100000001 /* RoomModelPreview.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4B2000102C3D130100000001 /* RoomModelPreview.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -26,6 +29,9 @@
 		4B2000002C3D130100000001 /* BackendConfig.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackendConfig.swift; sourceTree = "<group>"; };
 		4B2000012C3D130100000001 /* RoomUploadService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RoomUploadService.swift; sourceTree = "<group>"; };
 		4B2000042C3D130100000001 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		4B2000052C3D130100000001 /* UploadedRoomStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UploadedRoomStore.swift; sourceTree = "<group>"; };
+		4B2000072C3D130100000001 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		4B2000102C3D130100000001 /* RoomModelPreview.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RoomModelPreview.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -63,8 +69,11 @@
 				4B04739C2C3D120100000001 /* ContentView.swift */,
 				4B04739D2C3D120100000001 /* RoomScanController.swift */,
 				4B2000012C3D130100000001 /* RoomUploadService.swift */,
+				4B2000052C3D130100000001 /* UploadedRoomStore.swift */,
+				4B2000102C3D130100000001 /* RoomModelPreview.swift */,
 				4B04739E2C3D120100000001 /* RoomCaptureViewContainer.swift */,
 				4B04739F2C3D120100000001 /* ShareSheet.swift */,
+				4B2000072C3D130100000001 /* Assets.xcassets */,
 				4B2000042C3D130100000001 /* Info.plist */,
 			);
 			path = RoomFit;
@@ -131,6 +140,7 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				4B2000082C3D130100000001 /* Assets.xcassets in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -146,6 +156,8 @@
 				4B0473A12C3D120100000001 /* ContentView.swift in Sources */,
 				4B0473A22C3D120100000001 /* RoomScanController.swift in Sources */,
 				4B2000032C3D130100000001 /* RoomUploadService.swift in Sources */,
+				4B2000062C3D130100000001 /* UploadedRoomStore.swift in Sources */,
+				4B2000092C3D130100000001 /* RoomModelPreview.swift in Sources */,
 				4B0473A32C3D120100000001 /* RoomCaptureViewContainer.swift in Sources */,
 				4B0473A42C3D120100000001 /* ShareSheet.swift in Sources */,
 			);
@@ -283,7 +295,7 @@
 				DEVELOPMENT_TEAM = MYCFDSZ48B;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = RoomFit/Info.plist;
-				INFOPLIST_KEY_NSCameraUsageDescription = "RoomFit uses the camera and LiDAR sensor to scan rooms with RoomPlan.";
+				INFOPLIST_KEY_NSCameraUsageDescription = "방을 스캔하기 위해 카메라와 라이다 센서를 사용합니다.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
@@ -313,7 +325,7 @@
 				DEVELOPMENT_TEAM = MYCFDSZ48B;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = RoomFit/Info.plist;
-				INFOPLIST_KEY_NSCameraUsageDescription = "RoomFit uses the camera and LiDAR sensor to scan rooms with RoomPlan.";
+				INFOPLIST_KEY_NSCameraUsageDescription = "방을 스캔하기 위해 카메라와 라이다 센서를 사용합니다.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;

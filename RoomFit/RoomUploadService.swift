@@ -28,7 +28,7 @@ struct RoomUploadService {
         }
 
         guard decodedResponse.success, let data = decodedResponse.data else {
-            throw RoomUploadError.backend(decodedResponse.error?.message ?? "Upload failed.")
+            throw RoomUploadError.backend(decodedResponse.error?.message ?? "업로드에 실패했습니다.")
         }
 
         return data
@@ -60,13 +60,13 @@ enum RoomUploadError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .invalidResponse:
-            return "The server response was not valid."
+            return "서버 응답이 올바르지 않습니다."
         case .serverStatus(let statusCode):
-            return "Server returned HTTP \(statusCode)."
+            return "서버 오류가 발생했습니다. (HTTP \(statusCode))"
         case .backend(let message):
             return message
         case .decodingFailed:
-            return "Could not read the upload response."
+            return "업로드 응답을 읽을 수 없습니다."
         }
     }
 }

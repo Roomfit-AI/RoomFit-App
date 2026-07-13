@@ -596,11 +596,7 @@ private struct HomeView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color.appCream.ignoresSafeArea())
         .sheet(item: $selectedRecord) { record in
-            RoomDetailView(
-                record: record,
-                modelURL: uploadHistory.modelURL(for: record),
-                thumbnail: uploadHistory.thumbnailImage(for: record)
-            )
+            RoomDetailView(record: record, uploadHistory: uploadHistory)
         }
         .confirmationDialog(
             "이 방을 목록에서 삭제하시겠습니까?",
@@ -772,39 +768,196 @@ private struct HomeView: View {
 /// Shown when a list row is tapped — an interactive 3D preview of the exported
 /// USDZ if one exists, otherwise the saved thumbnail as a fallback (mock/manual
 /// rooms have no CapturedRoom to export, and a model export can also just fail).
+/// Deliberately mirrors the just-scanned completed screen's layout (big preview
+/// up top, name field + actions in a bottom sheet) so opening a saved room feels
+/// like the same place, not a separate read-only viewer.
 private struct RoomDetailView: View {
     let record: UploadedRoomRecord
-    let modelURL: URL?
-    let thumbnail: UIImage?
+    @ObservedObject var uploadHistory: UploadedRoomStore
     @Environment(\.dismiss) private var dismiss
+    @State private var editedName: String
+    @State private var shareURL: URL?
+    @State private var isShowingShareSheet = false
+    @State private var isReuploading = false
+    @State private var reuploadMessage: String?
+    @State private var isShowingDeleteConfirm = false
+
+    init(record: UploadedRoomRecord, uploadHistory: UploadedRoomStore) {
+        self.record = record
+        self.uploadHistory = uploadHistory
+        _editedName = State(initialValue: record.name)
+    }
+
+    /// The record can be renamed while this sheet is open — re-read it from the
+    /// store each time so the heading reflects the latest saved name.
+    private var currentRecord: UploadedRoomRecord {
+        uploadHistory.records.first { $0.id == record.id } ?? record
+    }
 
     var body: some View {
-        NavigationStack {
-            Group {
-                if let modelURL {
-                    RoomModelPreview(url: modelURL)
-                } else if let thumbnail {
-                    Image(uiImage: thumbnail)
-                        .resizable()
-                        .scaledToFit()
-                        .padding()
-                } else {
-                    VStack(spacing: 12) {
-                        Image(systemName: "cube.transparent")
-                            .font(.system(size: 48))
-                            .foregroundStyle(Color.appInkSoft)
-                        Text("저장된 미리보기가 없습니다.")
-                            .foregroundStyle(Color.appInkSoft)
-                    }
-                }
+        VStack(alignment: .leading, spacing: 14) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(currentRecord.name)
+                    .font(.system(size: 22, weight: .heavy))
+                    .foregroundStyle(Color.appInk)
+                Text(currentRecord.uploadedAt, style: .date)
+                    .font(.system(size: 13))
+                    .foregroundStyle(Color.appInkSoft)
             }
-            .navigationTitle(record.name)
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("닫기") { dismiss() }
-                }
+            .padding(.horizontal, 20)
+            .padding(.top, 20)
+
+            preview
+                .padding(.horizontal, 20)
+                .padding(.bottom, 20)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .background(Color.appCream.ignoresSafeArea())
+        .safeAreaInset(edge: .bottom) { detailBar }
+        .sheet(isPresented: $isShowingShareSheet) {
+            if let shareURL {
+                ShareSheet(activityItems: [shareURL])
             }
         }
+    }
+
+    private var preview: some View {
+        Group {
+            if let modelURL = uploadHistory.modelURL(for: currentRecord) {
+                RoomModelPreview(url: modelURL)
+            } else if let thumbnail = uploadHistory.thumbnailImage(for: currentRecord) {
+                Image(uiImage: thumbnail)
+                    .resizable()
+                    .scaledToFit()
+                    .padding()
+            } else {
+                VStack(spacing: 12) {
+                    Image(systemName: "cube.transparent")
+                        .font(.system(size: 48))
+                        .foregroundStyle(Color.appInkSoft)
+                    Text("저장된 미리보기가 없습니다.")
+                        .foregroundStyle(Color.appInkSoft)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color.appFloor)
+        .clipShape(RoundedRectangle(cornerRadius: 20))
+        .overlay(RoundedRectangle(cornerRadius: 20).stroke(Color.appBorder, lineWidth: 1))
+    }
+
+    private var detailBar: some View {
+        VStack(spacing: 14) {
+            VStack(alignment: .leading, spacing: 6) {
+                Text("방 이름")
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundStyle(Color.appInkSoft)
+                    .textCase(.uppercase)
+                    .tracking(0.4)
+
+                TextField("방 이름", text: $editedName)
+                    .textFieldStyle(.plain)
+                    .padding(.vertical, 12)
+                    .padding(.horizontal, 14)
+                    .background(Color.appCard, in: RoundedRectangle(cornerRadius: 12))
+                    .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.appBorder, lineWidth: 1))
+            }
+
+            if let reuploadMessage {
+                Text(reuploadMessage)
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(reuploadMessage.hasPrefix("실패") ? .red : Color.appSage)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+
+            VStack(spacing: 10) {
+                Button {
+                    reuploadTapped()
+                } label: {
+                    HStack {
+                        if isReuploading {
+                            ProgressView().tint(Color.appCream)
+                        } else {
+                            Image(systemName: "icloud.and.arrow.up")
+                        }
+                        Text(isReuploading ? "업로드 중..." : "다시 업로드하기")
+                    }
+                }
+                .buttonStyle(PillButtonStyle(kind: .solid))
+                .disabled(isReuploading || uploadHistory.jsonURL(for: currentRecord) == nil)
+
+                Button {
+                    uploadHistory.rename(currentRecord, to: editedName)
+                } label: {
+                    Text("이름 저장")
+                }
+                .buttonStyle(PillButtonStyle(kind: .ghost))
+                .disabled(editedName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+
+                Button {
+                    isShowingDeleteConfirm = true
+                } label: {
+                    Text("삭제").foregroundStyle(.red)
+                }
+                .buttonStyle(PillButtonStyle(kind: .ghost))
+            }
+
+            HStack(spacing: 20) {
+                Button {
+                    dismiss()
+                } label: {
+                    Text("닫기")
+                }
+                .buttonStyle(LinkButtonStyle())
+
+                Button {
+                    shareRecordJSON()
+                } label: {
+                    Text("JSON 공유")
+                }
+                .buttonStyle(LinkButtonStyle())
+                .disabled(uploadHistory.jsonURL(for: currentRecord) == nil)
+            }
+            .frame(maxWidth: .infinity)
+        }
+        .padding(20)
+        .background(Color.appCream)
+        .clipShape(RoundedCorner(radius: 28, corners: [.topLeft, .topRight]))
+        .confirmationDialog(
+            "이 방을 목록에서 삭제하시겠습니까?",
+            isPresented: $isShowingDeleteConfirm,
+            titleVisibility: .visible
+        ) {
+            Button("삭제", role: .destructive) {
+                uploadHistory.delete(currentRecord)
+                dismiss()
+            }
+            Button("취소", role: .cancel) {}
+        }
+    }
+
+    private func reuploadTapped() {
+        guard !isReuploading else { return }
+        uploadHistory.rename(currentRecord, to: editedName)
+        isReuploading = true
+        reuploadMessage = nil
+
+        Task {
+            do {
+                try await uploadHistory.reupload(currentRecord)
+                isReuploading = false
+                reuploadMessage = "다시 업로드되었습니다."
+            } catch {
+                isReuploading = false
+                reuploadMessage = "실패: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    private func shareRecordJSON() {
+        guard let url = uploadHistory.jsonURL(for: currentRecord) else { return }
+        shareURL = url
+        isShowingShareSheet = true
     }
 }

@@ -177,7 +177,8 @@ final class RoomScanController: NSObject, ObservableObject {
                         roomId: response.roomId,
                         name: response.name ?? finalName,
                         thumbnail: thumbnail,
-                        modelSourceURL: modelSourceURL
+                        modelSourceURL: modelSourceURL,
+                        jsonData: data
                     )
                 } catch {
                     isUploadingToBackend = false
@@ -203,7 +204,10 @@ final class RoomScanController: NSObject, ObservableObject {
 
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID().uuidString).usdz")
         do {
-            try capturedRoom.export(to: url, exportOptions: .parametric)
+            // `.parametric` renders idealized flat/thin wall planes — `.mesh` uses
+            // the actual captured geometry instead, which reads as solid walls
+            // with real thickness rather than paper-thin cutouts.
+            try capturedRoom.export(to: url, exportOptions: .mesh)
         } catch {
             return nil
         }

@@ -204,10 +204,14 @@ final class RoomScanController: NSObject, ObservableObject {
 
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID().uuidString).usdz")
         do {
-            // `.parametric` renders idealized flat/thin wall planes — `.mesh` uses
-            // the actual captured geometry instead, which reads as solid walls
-            // with real thickness rather than paper-thin cutouts.
-            try capturedRoom.export(to: url, exportOptions: .mesh)
+            // `.mesh` uses the raw captured geometry, which carries real scan
+            // noise/skew and looks visibly different from the idealized rectangle
+            // the web frontend draws from this same room's width/depth — `.parametric`
+            // is RoomPlan's own straightened, idealized version and matches that
+            // mental model much better. (The "walls look thin" complaint this was
+            // meant to fix was actually about our own synthetic gap-fill patches
+            // below, which are addressed directly with real thickness now.)
+            try capturedRoom.export(to: url, exportOptions: .parametric)
         } catch {
             return nil
         }
@@ -250,9 +254,19 @@ final class RoomScanController: NSObject, ObservableObject {
                 let length = (dx * dx + dz * dz).squareRoot()
                 guard length > 0.05 else { continue }
 
-                let wallGeometry = SCNPlane(width: CGFloat(length), height: CGFloat(wallHeight))
-                wallGeometry.firstMaterial?.diffuse.contents = UIColor(white: 0.85, alpha: 1)
-                wallGeometry.firstMaterial?.isDoubleSided = true
+                // A real SCNBox (not a zero-thickness SCNPlane) so the patched
+                // section reads as a solid wall like its neighbors instead of a
+                // paper-thin cutout.
+                let wallThickness = 0.1
+                let wallGeometry = SCNBox(
+                    width: CGFloat(length),
+                    height: CGFloat(wallHeight),
+                    length: CGFloat(wallThickness),
+                    chamferRadius: 0
+                )
+                let material = SCNMaterial()
+                material.diffuse.contents = UIColor(white: 0.85, alpha: 1)
+                wallGeometry.materials = Array(repeating: material, count: 6)
 
                 let wallNode = SCNNode(geometry: wallGeometry)
                 wallNode.position = SCNVector3(
@@ -260,7 +274,7 @@ final class RoomScanController: NSObject, ObservableObject {
                     Float(frame.originY + wallHeight / 2),
                     Float((worldA.z + worldB.z) / 2)
                 )
-                // SCNPlane's local +X ("width" axis) starts aligned with world +X;
+                // SCNBox's local +X ("width" axis) starts aligned with world +X;
                 // rotating by atan2(-dz, dx) around Y turns it to face the A→B
                 // direction (SceneKit's Y-rotation matrix sends +Z toward +X for
                 // positive angles).
@@ -452,11 +466,12 @@ final class RoomScanController: NSObject, ObservableObject {
         )
         let openings = extractOpenings(from: capturedRoom, frame: frame)
         let furniture = extractFurniture(from: capturedRoom, frame: frame)
+        let walls = extractWalls(from: capturedRoom, frame: frame)
 
         appendRoomSummary(room: room, capturedRoom: capturedRoom, frame: frame, openings: openings, furniture: furniture)
         lastDebugInfo = debugLogLines.joined(separator: "\n")
 
-        return RoomFitRoomJSON(room: room, openings: openings, furniture: furniture)
+        return RoomFitRoomJSON(room: room, walls: walls, openings: openings, furniture: furniture)
     }
 
     /// Appends a top-level summary (per-side wall coverage, missing sides, item
@@ -489,7 +504,7 @@ final class RoomScanController: NSObject, ObservableObject {
             logDebug("[RoomFit] no reference frame — room size used a raw wall-dimension fallback")
         }
 
-        logDebug("[RoomFit] openings: \(openings.count), furniture: \(furniture.count)")
+        logDebug("[RoomFit] walls exported: \(capturedRoom.walls.count), openings: \(openings.count), furniture: \(furniture.count)")
     }
 
     // MARK: - Room-local coordinate frame
@@ -758,6 +773,42 @@ final class RoomScanController: NSObject, ObservableObject {
         return openings
     }
 
+    // MARK: - Walls
+
+    /// The real captured wall segments (start/end in the same corner-origin space
+    /// as furniture/opening coordinates) — lets consumers (e.g. the web frontend)
+    /// draw the room's true shape instead of only having a width x height
+    /// rectangle to idealize from.
+    private func extractWalls(from capturedRoom: CapturedRoom, frame: RoomReferenceFrame?) -> [RoomFitWall] {
+        guard let frame else { return [] }
+
+        return capturedRoom.walls.map { wall -> RoomFitWall in
+            let direction = normalizedXZ(wall.transform.columns.0)
+            let halfLength = Double(wall.dimensions.x) / 2
+            let centerX = Double(wall.transform.columns.3.x)
+            let centerZ = Double(wall.transform.columns.3.z)
+
+            let startCorner = cornerCoordinates(
+                worldX: centerX - direction.x * halfLength,
+                worldZ: centerZ - direction.z * halfLength,
+                frame: frame
+            )
+            let endCorner = cornerCoordinates(
+                worldX: centerX + direction.x * halfLength,
+                worldZ: centerZ + direction.z * halfLength,
+                frame: frame
+            )
+
+            return RoomFitWall(
+                id: wall.identifier.uuidString,
+                start: RoomFitPosition(x: roundedOffset(startCorner.x), z: roundedOffset(startCorner.z)),
+                end: RoomFitPosition(x: roundedOffset(endCorner.x), z: roundedOffset(endCorner.z)),
+                height: roundedOffset(Double(wall.dimensions.y)),
+                thickness: roundedOffset(Double(wall.dimensions.z))
+            )
+        }
+    }
+
     // MARK: - Furniture
 
     private func extractFurniture(from capturedRoom: CapturedRoom, frame: RoomReferenceFrame?) -> [RoomFitFurniture] {
@@ -964,8 +1015,17 @@ private enum ExportError: LocalizedError {
 
 private struct RoomFitRoomJSON: Codable {
     let room: RoomFitRoom
+    let walls: [RoomFitWall]
     let openings: [RoomFitOpening]
     let furniture: [RoomFitFurniture]
+}
+
+private struct RoomFitWall: Codable {
+    let id: String
+    let start: RoomFitPosition
+    let end: RoomFitPosition
+    let height: Double
+    let thickness: Double
 }
 
 private struct RoomFitRoom: Codable {

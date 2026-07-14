@@ -121,6 +121,7 @@ final class RoomScanController: NSObject, ObservableObject {
         jsonPreviewText = makeJSONString(
             from: RoomFitRoomJSON(
                 room: RoomFitRoom(width: 3.2, depth: 4.5, height: 2.4),
+                walls: [],
                 openings: [],
                 furniture: []
             )
@@ -141,6 +142,7 @@ final class RoomScanController: NSObject, ObservableObject {
             jsonPreviewText = makeJSONString(
                 from: RoomFitRoomJSON(
                     room: RoomFitRoom(width: width, depth: depth, height: height),
+                    walls: [],
                     openings: [],
                     furniture: []
                 )
@@ -162,7 +164,7 @@ final class RoomScanController: NSObject, ObservableObject {
         let modelSourceURL = exportUSDZIfPossible()
 
         do {
-            let data = try exportJSONData(name: finalName)
+            let data = try exportJSONData(name: finalName, thumbnail: thumbnail)
             isUploadingToBackend = true
             uploadMessage = nil
             statusText = "방 데이터를 업로드하는 중..."
@@ -391,32 +393,49 @@ final class RoomScanController: NSObject, ObservableObject {
         statusText = "오류: \(error.localizedDescription)"
     }
 
+    /// These "share JSON"/"share debug info" exports are one-shot hand-offs to
+    /// the share sheet, not data worth keeping — they used to live in
+    /// `Documents/`, permanently, with a fresh timestamped file on every single
+    /// tap and zero cleanup, which could accumulate indefinitely. `tmp/` is
+    /// purged by the OS on its own, and clearing this folder on every call means
+    /// it never holds more than the export currently being shared.
     private func scansDirectory() throws -> URL {
-        let documentsDirectory = try FileManager.default.url(
-            for: .documentDirectory,
-            in: .userDomainMask,
-            appropriateFor: nil,
-            create: true
-        )
-        let scansDirectory = documentsDirectory.appendingPathComponent("RoomScans", isDirectory: true)
+        let scansDirectory = FileManager.default.temporaryDirectory.appendingPathComponent("RoomScans", isDirectory: true)
         try FileManager.default.createDirectory(at: scansDirectory, withIntermediateDirectories: true)
+
+        if let existingFiles = try? FileManager.default.contentsOfDirectory(at: scansDirectory, includingPropertiesForKeys: nil) {
+            for file in existingFiles {
+                try? FileManager.default.removeItem(at: file)
+            }
+        }
+
         return scansDirectory
     }
 
-    private func exportJSONData(name: String? = nil) throws -> Data {
+    private func exportJSONData(name: String? = nil, thumbnail: UIImage? = nil) throws -> Data {
         guard let jsonPreviewText, let baseData = jsonPreviewText.data(using: .utf8) else {
             throw ExportError.noRoomJSON
         }
 
-        guard let name else { return baseData }
+        guard name != nil || thumbnail != nil else { return baseData }
 
-        // The room name is only known once the user is ready to upload, well after
-        // the RoomFitRoomJSON string was generated — so it's spliced in here rather
-        // than threaded through every JSON-generation call site.
+        // The room name and thumbnail are only known once the user is ready to
+        // upload, well after the RoomFitRoomJSON string was generated — so both
+        // are spliced in here rather than threaded through every JSON-generation
+        // call site.
         guard var object = try? JSONSerialization.jsonObject(with: baseData) as? [String: Any] else {
             return baseData
         }
-        object["name"] = name
+        if let name {
+            object["name"] = name
+        }
+        // JPEG at 0.6 quality keeps the base64 payload in the tens-of-KB range
+        // (this is stored inline in the backend's in-memory room map, not as a
+        // separate file/object-storage upload) while still being sharp enough
+        // for a small list-card thumbnail.
+        if let thumbnail, let jpegData = thumbnail.jpegData(compressionQuality: 0.6) {
+            object["thumbnailBase64"] = jpegData.base64EncodedString()
+        }
         return (try? JSONSerialization.data(withJSONObject: object, options: [.prettyPrinted, .sortedKeys])) ?? baseData
     }
 
@@ -573,7 +592,13 @@ final class RoomScanController: NSObject, ObservableObject {
     private func referenceFrame(fromFloor floor: CapturedRoom.Surface) -> RoomReferenceFrame? {
         let transform = floor.transform
         let xAxis = normalizedXZ(transform.columns.0)
-        let zAxis = normalizedXZ(transform.columns.1)
+        // Not `transform.columns.1` directly: RoomPlan doesn't guarantee whether a
+        // floor's normal (its local Z / thickness axis) points world +Y or -Y, and
+        // that sign flips which way column 1 points too — inconsistent from scan to
+        // scan, which mirrored the whole room (walls/furniture/openings shifted
+        // together, so nothing looked internally broken, just flipped left-right).
+        // A fixed 90° rotation of xAxis is deterministic regardless of that sign.
+        let zAxis = (x: -xAxis.z, z: xAxis.x)
 
         return RoomReferenceFrame(
             originX: Double(transform.columns.3.x),
@@ -593,7 +618,11 @@ final class RoomScanController: NSObject, ObservableObject {
 
         let refTransform = referenceWall.transform
         let xAxis = normalizedXZ(refTransform.columns.0)
-        let zAxis = normalizedXZ(refTransform.columns.2)
+        // Same reasoning as the floor-derived frame above: a wall's local Z (its
+        // thickness/normal axis) isn't guaranteed to consistently face "into" vs
+        // "out of" the room, so deriving zAxis from it can flip handedness from
+        // scan to scan. Fix it to xAxis's own perpendicular instead.
+        let zAxis = (x: -xAxis.z, z: xAxis.x)
         let originX = Double(refTransform.columns.3.x)
         let originZ = Double(refTransform.columns.3.z)
 
@@ -782,7 +811,7 @@ final class RoomScanController: NSObject, ObservableObject {
     private func extractWalls(from capturedRoom: CapturedRoom, frame: RoomReferenceFrame?) -> [RoomFitWall] {
         guard let frame else { return [] }
 
-        return capturedRoom.walls.map { wall -> RoomFitWall in
+        var walls = capturedRoom.walls.map { wall -> RoomFitWall in
             let direction = normalizedXZ(wall.transform.columns.0)
             let halfLength = Double(wall.dimensions.x) / 2
             let centerX = Double(wall.transform.columns.3.x)
@@ -807,6 +836,27 @@ final class RoomScanController: NSObject, ObservableObject {
                 thickness: roundedOffset(Double(wall.dimensions.z))
             )
         }
+
+        // The same gap patch already applied to the 3D USDZ preview (`closeWallGaps`)
+        // needs to land here too — otherwise this JSON (and anything downstream,
+        // like the web frontend) still shows the raw hole the patch was built to
+        // hide, since that SceneKit patch only ever touched the exported model file.
+        let wallHeight = roomHeight(from: capturedRoom)
+        for side in WallSide.allCases {
+            let gaps = coverageGaps(for: side, capturedRoom: capturedRoom, frame: frame)
+            for (index, gap) in gaps.enumerated() {
+                let (cornerA, cornerB) = cornerPoints(for: side, start: gap.start, end: gap.end, frame: frame)
+                walls.append(RoomFitWall(
+                    id: "gap-fill-\(side.rawValue)-\(index)",
+                    start: RoomFitPosition(x: roundedOffset(cornerA.x), z: roundedOffset(cornerA.z)),
+                    end: RoomFitPosition(x: roundedOffset(cornerB.x), z: roundedOffset(cornerB.z)),
+                    height: roundedOffset(wallHeight),
+                    thickness: 0.1
+                ))
+            }
+        }
+
+        return walls
     }
 
     // MARK: - Furniture

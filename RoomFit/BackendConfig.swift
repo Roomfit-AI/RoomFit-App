@@ -21,6 +21,21 @@ enum BackendConfig {
             .appendingPathComponent("upload")
     }
 
+    private static var pairingCodeBaseURL: URL {
+        baseURL
+            .appendingPathComponent("api")
+            .appendingPathComponent("clients")
+            .appendingPathComponent("pairing-code")
+    }
+
+    /// 발급/조회(멱등) — 이미 이 clientId로 발급된 코드가 있으면 그대로 돌려받는다.
+    static var pairingCodeURL: URL { pairingCodeBaseURL }
+
+    /// 기존 코드를 무효화하고 새 코드를 발급한다.
+    static var pairingCodeRegenerateURL: URL {
+        pairingCodeBaseURL.appendingPathComponent("regenerate")
+    }
+
     /// Web으로 넘어갈 때 쓰는 handoff URL. roomId/clientId는 문자열 이어붙이기가
     /// 아니라 URLComponents/URLQueryItem으로 구성해 인코딩 오류나 잘못된 URL을
     /// 만들 위험을 없앤다. Web 쪽이 아직 이 roomId/clientId 쿼리를 받는 라우트를

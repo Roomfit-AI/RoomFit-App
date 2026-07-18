@@ -7,6 +7,12 @@ private enum AppScreen {
     case scanning
 }
 
+/// The two ways a LiDAR-unsupported device can prepare a room to upload.
+private enum UnsupportedMethod {
+    case sampleRoom
+    case manualInput
+}
+
 struct ContentView: View {
     @StateObject private var uploadHistory: UploadedRoomStore
     @StateObject private var scanner: RoomScanController
@@ -19,6 +25,9 @@ struct ContentView: View {
     @State private var manualWidth = "3.2"
     @State private var manualDepth = "4.5"
     @State private var manualHeight = "2.4"
+    @State private var selectedSample: SampleRoomKind?
+    @State private var unsupportedMethod: UnsupportedMethod?
+    @State private var showIntro = true
 
     init() {
         let uploadHistory = UploadedRoomStore()
@@ -36,19 +45,31 @@ struct ContentView: View {
 
     var body: some View {
         Group {
-            switch screen {
-            case .home:
-                HomeView(
-                    isRoomPlanSupported: isRoomPlanSupported,
-                    uploadHistory: uploadHistory,
-                    onStart: startFromHome
-                )
-            case .scanning:
-                if isRoomPlanSupported {
-                    scannerView
-                } else {
-                    unsupportedView
+            if showIntro {
+                introView
+            } else {
+                switch screen {
+                case .home:
+                    HomeView(
+                        isRoomPlanSupported: isRoomPlanSupported,
+                        uploadHistory: uploadHistory,
+                        onStart: startFromHome
+                    )
+                case .scanning:
+                    if isRoomPlanSupported {
+                        scannerView
+                    } else {
+                        unsupportedView
+                    }
                 }
+            }
+        }
+        .task {
+            // 앱 첫 실행 시 3초 동안만 보여주는 인트로 — 이후엔 다시 뜨지 않는다
+            // (ContentView 자체가 최초 1번만 생성되는 루트 뷰라 `.task`도 1번만 실행됨).
+            try? await Task.sleep(for: .seconds(3))
+            withAnimation(.easeInOut(duration: 0.4)) {
+                showIntro = false
             }
         }
         .sheet(isPresented: $isShowingShareSheet) {
@@ -71,6 +92,35 @@ struct ContentView: View {
         } message: {
             Text("스캔본이 업로드되지 않았습니다. 홈으로 나가시겠습니까?")
         }
+    }
+
+    // MARK: - Intro (3초 스플래시)
+
+    private var introView: some View {
+        VStack(spacing: 20) {
+            Spacer()
+
+            IsometricRoomGlyph()
+                .frame(width: 96, height: 78)
+
+            VStack(spacing: 10) {
+                Text("ROOMFIT")
+                    .font(.system(size: 34, weight: .heavy))
+                    .foregroundStyle(Color.appInk)
+                    .tracking(2)
+
+                Text("당신만의 공간,\nAI가 완성해드립니다")
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(Color.appInkSoft)
+                    .multilineTextAlignment(.center)
+                    .lineSpacing(4)
+            }
+
+            Spacer()
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color.appCream.ignoresSafeArea())
+        .transition(.opacity)
     }
 
     private func startFromHome() {
@@ -376,7 +426,7 @@ struct ContentView: View {
         }
     }
 
-    // MARK: - Unsupported-device flow (manual entry)
+    // MARK: - Unsupported-device flow (sample room or manual size entry)
 
     private var unsupportedView: some View {
         ZStack {
@@ -391,24 +441,13 @@ struct ContentView: View {
                             .font(.system(size: 17, weight: .bold))
                             .foregroundStyle(Color.appInk)
 
-                        Text("테스트용 방 데이터를 만들거나, 방 크기를 직접 입력해 JSON을 생성할 수 있습니다.")
+                        Text("샘플룸 중 하나를 고르거나, 방 크기를 입력해 빈 방을 만들 수 있습니다.")
                             .font(.subheadline)
                             .foregroundStyle(Color.appInkSoft)
                             .multilineTextAlignment(.center)
                             .padding(.horizontal)
 
-                        Button {
-                            scanner.generateMockRoomJSON()
-                        } label: {
-                            Label("테스트용 방 데이터 생성", systemImage: "curlybraces")
-                        }
-                        .buttonStyle(PillButtonStyle(kind: .solid))
-
-                        manualInputCard
-
-                        if let jsonPreviewText = scanner.jsonPreviewText {
-                            jsonPreview(jsonPreviewText)
-                        }
+                        unsupportedContent
                     }
                     .padding()
                     .padding(.top, 32)
@@ -439,6 +478,141 @@ struct ContentView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color.appCream.ignoresSafeArea())
+        .onAppear {
+            // Re-entering this screen (e.g. after uploading, tapping Home, and
+            // starting again) should start from the choice screen, not show a
+            // stale "준비 완료" summary left over from the previous visit.
+            resetToChoice()
+        }
+    }
+
+    /// Three states, mutually exclusive: pick a method, fill in that method's
+    /// picker, or (once `scanner.phase == .completed`) show what's ready to
+    /// upload — no raw JSON is ever shown here.
+    @ViewBuilder
+    private var unsupportedContent: some View {
+        if scanner.phase == .completed {
+            readySummaryCard
+        } else if let unsupportedMethod {
+            VStack(spacing: 16) {
+                backToChoiceButton
+                switch unsupportedMethod {
+                case .sampleRoom:
+                    sampleRoomSection
+                case .manualInput:
+                    manualInputCard
+                }
+            }
+        } else {
+            methodChoiceSection
+        }
+    }
+
+    /// The top-level fork: sample room vs. manual size entry.
+    private var methodChoiceSection: some View {
+        VStack(spacing: 12) {
+            methodChoiceCard(
+                title: "샘플룸 사용",
+                subtitle: "미리 준비된 방 2종 중 하나를 골라 그대로 업로드합니다.",
+                icon: "square.stack.3d.up"
+            ) {
+                unsupportedMethod = .sampleRoom
+            }
+
+            methodChoiceCard(
+                title: "방 크기 직접 입력",
+                subtitle: "너비·깊이·높이를 입력한 크기의 빈 방을 만듭니다.",
+                icon: "ruler"
+            ) {
+                unsupportedMethod = .manualInput
+            }
+        }
+    }
+
+    private func methodChoiceCard(title: String, subtitle: String, icon: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 14) {
+                Image(systemName: icon)
+                    .font(.system(size: 22, weight: .semibold))
+                    .foregroundStyle(Color.appInk)
+                    .frame(width: 32)
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(title)
+                        .font(.system(size: 15, weight: .bold))
+                        .foregroundStyle(Color.appInk)
+                    Text(subtitle)
+                        .font(.system(size: 12))
+                        .foregroundStyle(Color.appInkSoft)
+                        .multilineTextAlignment(.leading)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                Spacer(minLength: 0)
+
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(Color.appInkSoft)
+            }
+            .padding(16)
+            .background(Color.appCard, in: RoundedRectangle(cornerRadius: 16))
+            .overlay(RoundedRectangle(cornerRadius: 16).stroke(Color.appBorder, lineWidth: 1))
+        }
+        .buttonStyle(.plain)
+    }
+
+    private var backToChoiceButton: some View {
+        Button {
+            unsupportedMethod = nil
+            selectedSample = nil
+        } label: {
+            Label("다른 방법 선택", systemImage: "chevron.left")
+        }
+        .buttonStyle(LinkButtonStyle())
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    /// Shown once a sample room or manual size has produced room data —
+    /// a plain-language summary instead of the raw JSON.
+    private var readySummaryCard: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 10) {
+                Image(systemName: "checkmark.circle.fill")
+                    .font(.system(size: 18, weight: .semibold))
+                    .foregroundStyle(Color.appSage)
+                Text("방 데이터 준비 완료")
+                    .font(.system(size: 15, weight: .bold))
+                    .foregroundStyle(Color.appInk)
+            }
+
+            Text(readySummaryText)
+                .font(.system(size: 13))
+                .foregroundStyle(Color.appInkSoft)
+
+            Button {
+                resetToChoice()
+            } label: {
+                Label("다시 선택하기", systemImage: "arrow.uturn.left")
+            }
+            .buttonStyle(LinkButtonStyle())
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.appCard, in: RoundedRectangle(cornerRadius: 16))
+        .overlay(RoundedRectangle(cornerRadius: 16).stroke(Color.appBorder, lineWidth: 1))
+    }
+
+    private var readySummaryText: String {
+        if let selectedSample {
+            return "선택한 샘플룸: \(selectedSample.displayName)"
+        }
+        return "직접 입력한 빈 방 크기: \(manualWidth) x \(manualDepth) x \(manualHeight) m"
+    }
+
+    private func resetToChoice() {
+        unsupportedMethod = nil
+        selectedSample = nil
+        scanner.resetPreparedRoom()
     }
 
     private var unsupportedExportBar: some View {
@@ -480,11 +654,67 @@ struct ContentView: View {
         .overlay(Rectangle().frame(height: 1).foregroundStyle(Color.appBorder), alignment: .top)
     }
 
+    /// iPhone Pro가 아니라 RoomPlan 스캔이 안 되는 기기를 위한 대체 경로 — 실제 스캔
+    /// JSON과 동일한 구조(벽/문/창문 포함)의 샘플룸 2종 중 하나를 골라 그대로 업로드할
+    /// 수 있게 한다. 백엔드에 미리 시딩된 "가구가 있는 방"/"빈 방" 샘플과 같은 데이터.
+    private var sampleRoomSection: some View {
+        VStack(spacing: 12) {
+            Text("샘플룸 선택")
+                .font(.system(size: 15, weight: .bold))
+                .foregroundStyle(Color.appInk)
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+            HStack(spacing: 12) {
+                ForEach(SampleRoomKind.allCases) { kind in
+                    sampleRoomCard(kind)
+                }
+            }
+        }
+        .padding(16)
+        .background(Color.appCard, in: RoundedRectangle(cornerRadius: 16))
+        .overlay(RoundedRectangle(cornerRadius: 16).stroke(Color.appBorder, lineWidth: 1))
+    }
+
+    private func sampleRoomCard(_ kind: SampleRoomKind) -> some View {
+        let isSelected = selectedSample == kind
+
+        return Button {
+            selectedSample = kind
+            scanner.loadSampleRoomJSON(kind)
+        } label: {
+            VStack(alignment: .leading, spacing: 8) {
+                Image(systemName: kind.iconName)
+                    .font(.system(size: 20, weight: .semibold))
+                    .foregroundStyle(isSelected ? Color.appCream : Color.appInk)
+
+                Text(kind.displayName)
+                    .font(.system(size: 13, weight: .bold))
+                    .foregroundStyle(isSelected ? Color.appCream : Color.appInk)
+
+                Text(kind.summary)
+                    .font(.system(size: 11))
+                    .foregroundStyle(isSelected ? Color.appCream.opacity(0.8) : Color.appInkSoft)
+                    .multilineTextAlignment(.leading)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(12)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(isSelected ? Color.appInk : Color.appCream, in: RoundedRectangle(cornerRadius: 12))
+            .overlay(RoundedRectangle(cornerRadius: 12).stroke(isSelected ? Color.appInk : Color.appBorder, lineWidth: 1))
+        }
+        .buttonStyle(.plain)
+    }
+
     private var manualInputCard: some View {
         VStack(spacing: 12) {
             Text("방 크기 직접 입력")
                 .font(.system(size: 15, weight: .bold))
                 .foregroundStyle(Color.appInk)
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+            Text("입력한 크기의 빈 방(가구 없음)이 만들어집니다.")
+                .font(.system(size: 12))
+                .foregroundStyle(Color.appInkSoft)
                 .frame(maxWidth: .infinity, alignment: .leading)
 
             HStack(spacing: 12) {
@@ -493,7 +723,15 @@ struct ContentView: View {
                 measurementField(title: "높이", text: $manualHeight)
             }
 
+            if scanner.statusText.hasPrefix("오류:") {
+                Text(scanner.statusText)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(.red)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+
             Button {
+                selectedSample = nil
                 scanner.createManualRoomJSON(
                     widthText: manualWidth,
                     depthText: manualDepth,
@@ -524,22 +762,6 @@ struct ContentView: View {
                 .keyboardType(.decimalPad)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-    }
-
-    private func jsonPreview(_ text: String) -> some View {
-        ScrollView([.vertical, .horizontal]) {
-            Text(text)
-                .font(.system(.caption, design: .monospaced))
-                .foregroundStyle(Color.appInk)
-                .textSelection(.enabled)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(12)
-        }
-        // Capped so the JSON panel can never grow past this and push the camera/3D
-        // preview off screen — it scrolls internally instead of expanding indefinitely.
-        .frame(maxWidth: .infinity, maxHeight: 220, alignment: .leading)
-        .background(Color.appCard, in: RoundedRectangle(cornerRadius: 12))
-        .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.appBorder, lineWidth: 1))
     }
 
     private func shareJSON() {

@@ -12,6 +12,35 @@ enum ScanPhase {
     case completed
 }
 
+/// LiDAR 스캔이 불가능한 기기를 위한 내장 샘플룸 2종.
+enum SampleRoomKind: CaseIterable, Identifiable, Equatable {
+    case empty
+    case furnished
+
+    var id: Self { self }
+
+    var displayName: String {
+        switch self {
+        case .empty: return "빈 방"
+        case .furnished: return "가구가 있는 방"
+        }
+    }
+
+    var summary: String {
+        switch self {
+        case .empty: return "가구 없이 방 구조만 있는 샘플입니다."
+        case .furnished: return "침대·책상·의자·수납장이 배치된 샘플입니다."
+        }
+    }
+
+    var iconName: String {
+        switch self {
+        case .empty: return "square.dashed"
+        case .furnished: return "bed.double.fill"
+        }
+    }
+}
+
 @MainActor
 final class RoomScanController: NSObject, ObservableObject {
     @Published var isScanning = false
@@ -115,20 +144,83 @@ final class RoomScanController: NSObject, ObservableObject {
         }
     }
 
-    func generateMockRoomJSON() {
+    /// 샘플룸을 고르거나 방 크기를 새로 입력하기 전, 이전에 준비된(하지만 아직
+    /// 업로드하지 않은) 방 데이터를 지운다 — `startScan()`은 실제 RoomPlan 캡처
+    /// 플로우 전용이라 이 대체 플로우에는 맞지 않는다.
+    func resetPreparedRoom() {
         capturedRoom = nil
         exportedFileURL = nil
-        jsonPreviewText = makeJSONString(
-            from: RoomFitRoomJSON(
-                room: RoomFitRoom(width: 3.2, depth: 4.5, height: 2.4),
-                walls: [],
-                openings: [],
-                furniture: []
-            )
-        )
+        jsonPreviewText = nil
+        uploadMessage = nil
+        phase = .idle
+        statusText = "스캔할 준비가 되었습니다."
+    }
+
+    /// LiDAR 스캔이 불가능한 기기(iPhone Pro가 아닌 기종)를 위한 샘플룸 2종 — 실제
+    /// RoomPlan 스캔 JSON(벽/문/창문 포함)을 그대로 내장해, 방 크기를 직접 입력하는 대신
+    /// 바로 골라서 업로드할 수 있게 한다. 백엔드 RoomSampleDataInitializer가 시딩하는
+    /// "가구가 있는 방"/"빈 방" 샘플과 동일한 방/벽/문/창문 형태를 쓴다.
+    func loadSampleRoomJSON(_ kind: SampleRoomKind) {
+        capturedRoom = nil
+        exportedFileURL = nil
+        jsonPreviewText = makeJSONString(from: Self.sampleRoomJSON(for: kind))
         uploadMessage = nil
         phase = .completed
-        statusText = "테스트용 방 데이터가 준비되었습니다."
+        statusText = "\(kind.displayName) 샘플 데이터가 준비되었습니다."
+    }
+
+    private static func sampleRoomJSON(for kind: SampleRoomKind) -> RoomFitRoomJSON {
+        let room = RoomFitRoom(width: 3.38, depth: 3.47, height: 2.28)
+        let walls: [RoomFitWall] = [
+            RoomFitWall(id: "wall-east", start: RoomFitPosition(x: 3.33, z: 0.06),
+                        end: RoomFitPosition(x: 3.33, z: 3.47), height: 2.28, thickness: 0),
+            RoomFitWall(id: "wall-north", start: RoomFitPosition(x: 3.33, z: 0.06),
+                        end: RoomFitPosition(x: 0, z: 0.06), height: 2.28, thickness: 0),
+            RoomFitWall(id: "wall-south", start: RoomFitPosition(x: 3.33, z: 3.47),
+                        end: RoomFitPosition(x: 0.14, z: 3.47), height: 2.28, thickness: 0),
+            RoomFitWall(id: "wall-west-upper", start: RoomFitPosition(x: 0, z: 1.51),
+                        end: RoomFitPosition(x: 0, z: 0.06), height: 2.28, thickness: 0),
+            RoomFitWall(id: "wall-west-lower-gap-fill", start: RoomFitPosition(x: 0, z: 1.51),
+                        end: RoomFitPosition(x: 0, z: 3.47), height: 2.28, thickness: 0.1)
+        ]
+        let openings: [RoomFitOpening] = [
+            RoomFitOpening(id: "sample-door", type: "door", wall: "west",
+                            offset: 0.47, width: 0.74, height: 2.09, sillHeight: nil),
+            RoomFitOpening(id: "sample-window", type: "window", wall: "east",
+                            offset: 1.67, width: 1.77, height: 1.66, sillHeight: 0.41)
+        ]
+
+        // 원본 스캔 좌표 그대로 두면 room width/depth 경계까지 여유가 1~6cm밖에
+        // 없는 항목이 있었다(특히 storage는 z방향 여유가 1cm) — 백엔드
+        // RoomService.validateFurnitureWithinRoom이 작은 오차에도 "가구가 방을
+        // 벗어났습니다"로 업로드를 거부할 수 있어, bed/desk-1/storage를 방 안쪽으로
+        // 살짝 밀어 모든 항목이 최소 5cm 이상 여유를 갖게 했다. 백엔드
+        // RoomSampleDataInitializer의 같은 샘플과 동일한 좌표로 맞춰뒀다.
+        let furniture: [RoomFitFurniture]
+        switch kind {
+        case .empty:
+            furniture = []
+        case .furnished:
+            furniture = [
+                RoomFitFurniture(id: "sample-bed", type: "bed", label: "침대",
+                                  width: 1.0, depth: 1.96, height: 0.55,
+                                  position: RoomFitPosition(x: 2.78, z: 1.17), rotation: 0, status: "EXISTING"),
+                RoomFitFurniture(id: "sample-desk-1", type: "desk", label: "책상",
+                                  width: 1.3, depth: 0.66, height: 0.73,
+                                  position: RoomFitPosition(x: 1.59, z: 0.45), rotation: 0, status: "EXISTING"),
+                RoomFitFurniture(id: "sample-desk-2", type: "desk", label: "책상",
+                                  width: 0.58, depth: 0.84, height: 0.38,
+                                  position: RoomFitPosition(x: 1.58, z: 1.8), rotation: 90, status: "EXISTING"),
+                RoomFitFurniture(id: "sample-chair", type: "chair", label: "의자",
+                                  width: 0.56, depth: 0.58, height: 0.73,
+                                  position: RoomFitPosition(x: 1.59, z: 0.63), rotation: 180, status: "EXISTING"),
+                RoomFitFurniture(id: "sample-storage", type: "storage", label: "수납장",
+                                  width: 1.05, depth: 0.64, height: 1.82,
+                                  position: RoomFitPosition(x: 2.8, z: 3.05), rotation: 180, status: "EXISTING")
+            ]
+        }
+
+        return RoomFitRoomJSON(room: room, walls: walls, openings: openings, furniture: furniture)
     }
 
     func createManualRoomJSON(widthText: String, depthText: String, heightText: String) {

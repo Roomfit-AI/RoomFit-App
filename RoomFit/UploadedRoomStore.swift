@@ -104,7 +104,7 @@ final class UploadedRoomStore: ObservableObject {
             throw UploadedRoomStoreError.missingJSON
         }
 
-        let response = try await uploadService.uploadRoomJSON(data)
+        let response = try await uploadService.uploadRoomJSON(data, clientId: RoomFitClientIdentity.getOrCreateClientId())
 
         guard let index = records.firstIndex(where: { $0.id == record.id }) else { return record }
         let updated = UploadedRoomRecord(

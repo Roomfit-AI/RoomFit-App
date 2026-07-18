@@ -16,7 +16,9 @@ private enum UnsupportedMethod {
 struct ContentView: View {
     @StateObject private var uploadHistory: UploadedRoomStore
     @StateObject private var scanner: RoomScanController
+    @StateObject private var pairingCodeStore = ClientPairingCodeStore()
     @State private var screen: AppScreen = .home
+    @State private var isShowingPairingCode = false
     @State private var shareURL: URL?
     @State private var isShowingShareSheet = false
     @State private var isShowingUnsavedRescanAlert = false
@@ -53,7 +55,8 @@ struct ContentView: View {
                     HomeView(
                         isRoomPlanSupported: isRoomPlanSupported,
                         uploadHistory: uploadHistory,
-                        onStart: startFromHome
+                        onStart: startFromHome,
+                        onShowPairingCode: showPairingCode
                     )
                 case .scanning:
                     if isRoomPlanSupported {
@@ -76,6 +79,9 @@ struct ContentView: View {
             if let shareURL {
                 ShareSheet(activityItems: [shareURL])
             }
+        }
+        .sheet(isPresented: $isShowingPairingCode) {
+            PairingCodeSheetView(store: pairingCodeStore)
         }
         .alert("업로드되지 않은 스캔", isPresented: $isShowingUnsavedRescanAlert) {
             Button("취소", role: .cancel) {}
@@ -130,6 +136,10 @@ struct ContentView: View {
         // been mounted yet at this point, so captureSession is still nil and
         // startScan() would bail out with "스캐너가 아직 준비되지 않았습니다."
         // scannerView's onAppear triggers the actual start once it's attached.
+    }
+
+    private func showPairingCode() {
+        isShowingPairingCode = true
     }
 
     private func requestRescan() {
@@ -410,6 +420,22 @@ struct ContentView: View {
             .buttonStyle(PillButtonStyle(kind: .solid))
             .disabled(!scanner.canExportJSON || scanner.isUploadingToBackend)
 
+            if scanner.canReopenWeb {
+                Button {
+                    openWeb()
+                } label: {
+                    Label("웹에서 보기", systemImage: "safari")
+                }
+                .buttonStyle(PillButtonStyle(kind: .ghost))
+            }
+
+            Button {
+                showPairingCode()
+            } label: {
+                Label("컴퓨터에서 보기", systemImage: "desktopcomputer")
+            }
+            .buttonStyle(PillButtonStyle(kind: .ghost))
+
             Button {
                 requestRescan()
             } label: {
@@ -423,6 +449,19 @@ struct ContentView: View {
                 Label("홈으로", systemImage: "house.fill")
             }
             .buttonStyle(PillButtonStyle(kind: .ghost))
+        }
+    }
+
+    /// Room 업로드 성공 후 "웹에서 보기"에서 호출한다 — 업로드 자체가 실패한
+    /// 경우와 구분하기 위해, 여기서 실패하면(브라우저를 열 수 없는 등 드문 경우)
+    /// scanner.uploadMessage를 별도 문구로 덮어써 "업로드는 끝났다"는 걸 분명히
+    /// 한다.
+    private func openWeb() {
+        guard let url = scanner.webHandoffURL else { return }
+        UIApplication.shared.open(url) { success in
+            if !success {
+                scanner.recordWebOpenFailure()
+            }
         }
     }
 
@@ -641,6 +680,22 @@ struct ContentView: View {
             .buttonStyle(PillButtonStyle(kind: .solid))
             .disabled(!scanner.canExportJSON || scanner.isUploadingToBackend)
 
+            if scanner.canReopenWeb {
+                Button {
+                    openWeb()
+                } label: {
+                    Label("웹에서 보기", systemImage: "safari")
+                }
+                .buttonStyle(PillButtonStyle(kind: .ghost))
+            }
+
+            Button {
+                showPairingCode()
+            } label: {
+                Label("컴퓨터에서 보기", systemImage: "desktopcomputer")
+            }
+            .buttonStyle(PillButtonStyle(kind: .ghost))
+
             Button {
                 shareJSON()
             } label: {
@@ -787,6 +842,7 @@ private struct HomeView: View {
     let isRoomPlanSupported: Bool
     @ObservedObject var uploadHistory: UploadedRoomStore
     let onStart: () -> Void
+    let onShowPairingCode: () -> Void
     @State private var selectedRecord: UploadedRoomRecord?
     @State private var recordPendingDelete: UploadedRoomRecord?
 
@@ -841,12 +897,22 @@ private struct HomeView: View {
     // MARK: - Nav
 
     private var topNav: some View {
-        HStack {
+        HStack(spacing: 10) {
             Text("RoomFit")
                 .font(.system(size: 17, weight: .heavy))
                 .foregroundStyle(Color.appInk)
 
             Spacer()
+
+            Button(action: onShowPairingCode) {
+                Image(systemName: "desktopcomputer")
+                    .font(.system(size: 13, weight: .bold))
+                    .foregroundStyle(Color.appInkSoft)
+                    .padding(10)
+                    .background(Color.appCard, in: Circle())
+                    .overlay(Circle().stroke(Color.appBorder, lineWidth: 1))
+            }
+            .accessibilityLabel("컴퓨터와 연결하기")
 
             Button(action: onStart) {
                 Text(isRoomPlanSupported ? "스캔 시작" : "시작하기")

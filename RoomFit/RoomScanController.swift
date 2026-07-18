@@ -109,6 +109,7 @@ final class RoomScanController: NSObject, ObservableObject {
         lastModelURL = nil
         lastDebugInfo = nil
         debugLogLines = []
+        resetLastSuccessfulRoom()
         isScanning = false  // 잠깐 false로 리셋
 
         // 약간의 딜레이 후 새 스캔 시작 (이전 세션 정리 시간 확보)
@@ -152,8 +153,19 @@ final class RoomScanController: NSObject, ObservableObject {
         exportedFileURL = nil
         jsonPreviewText = nil
         uploadMessage = nil
+        resetLastSuccessfulRoom()
         phase = .idle
         statusText = "스캔할 준비가 되었습니다."
+    }
+
+    /// 새로 준비하는 방 데이터는 이전에 성공한 업로드와 별개이므로, 새 스캔/샘플
+    /// 선택/수동 입력을 시작할 때마다 "마지막 성공 Room" 참조도 함께 지운다 —
+    /// 그렇지 않으면 다른 방을 준비해놓고도 예전 방의 "웹에서 보기"가 계속
+    /// 활성화되어 있는 것처럼 보인다.
+    private func resetLastSuccessfulRoom() {
+        lastSuccessfulRoomId = nil
+        lastSuccessfulClientId = nil
+        lastUploadHadWarnings = false
     }
 
     /// LiDAR 스캔이 불가능한 기기(iPhone Pro가 아닌 기종)를 위한 샘플룸 2종 — 실제
@@ -165,6 +177,7 @@ final class RoomScanController: NSObject, ObservableObject {
         exportedFileURL = nil
         jsonPreviewText = makeJSONString(from: Self.sampleRoomJSON(for: kind))
         uploadMessage = nil
+        resetLastSuccessfulRoom()
         phase = .completed
         statusText = "\(kind.displayName) 샘플 데이터가 준비되었습니다."
     }
@@ -240,6 +253,7 @@ final class RoomScanController: NSObject, ObservableObject {
                 )
             )
             uploadMessage = nil
+            resetLastSuccessfulRoom()
             phase = .completed
             statusText = "입력한 방 데이터가 준비되었습니다."
         } catch {
@@ -247,25 +261,53 @@ final class RoomScanController: NSObject, ObservableObject {
         }
     }
 
+    /// 업로드에 사용한 요청과 정확히 같은 Client ID로만 Web handoff URL을 만들 수
+    /// 있게 성공한 업로드의 roomId/clientId를 들고 있는다. 실패한 시도에서는
+    /// 건드리지 않아, 재시도 중에도 마지막으로 성공한 방을 계속 "웹에서 보기" 할
+    /// 수 있다.
+    @Published private(set) var lastSuccessfulRoomId: Int?
+    @Published private(set) var lastSuccessfulClientId: String?
+    @Published private(set) var lastUploadHadWarnings = false
+
+    var canReopenWeb: Bool { lastSuccessfulRoomId != nil && lastSuccessfulClientId != nil }
+
+    var webHandoffURL: URL? {
+        guard let roomId = lastSuccessfulRoomId, let clientId = lastSuccessfulClientId else { return nil }
+        return BackendConfig.webHandoffURL(roomId: roomId, clientId: clientId)
+    }
+
     func uploadJSONToBackend(name: String) {
+        // 업로드 중 버튼을 여러 번 눌러도(심사자/사용자 모두) 같은 요청이 중복
+        // 실행되지 않도록 막는다 — 새 Room이 두 번 생기는 걸 방지.
         guard !isUploadingToBackend else { return }
 
         let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
         let finalName = trimmedName.isEmpty ? "이름 없는 방" : trimmedName
         let thumbnail = lastThumbnail
         let modelSourceURL = exportUSDZIfPossible()
+        // 업로드 Header와 Web handoff에 실어 보낼 값은 항상 같은 영구 Client
+        // ID다 — 재시도에서도, 실패해도 절대 새로 만들지 않는다.
+        let clientId = RoomFitClientIdentity.getOrCreateClientId()
 
         do {
             let data = try exportJSONData(name: finalName, thumbnail: thumbnail)
             isUploadingToBackend = true
             uploadMessage = nil
-            statusText = "방 데이터를 업로드하는 중..."
+            statusText = "스캔한 방을 안전하게 변환하고 있습니다."
 
             Task { @MainActor in
                 do {
-                    let response = try await uploadService.uploadRoomJSON(data)
+                    let response = try await uploadService.uploadRoomJSON(data, clientId: clientId)
                     isUploadingToBackend = false
-                    uploadMessage = "업로드 완료. roomId: \(response.roomId)"
+                    lastSuccessfulRoomId = response.roomId
+                    lastSuccessfulClientId = clientId
+                    lastUploadHadWarnings = response.hadWarnings
+                    // ACCEPTED와 ACCEPTED_WITH_WARNINGS 둘 다 성공 — warning의
+                    // 원본 좌표/메시지는 사용자에게 노출하지 않고, 조정이 있었다는
+                    // 사실만 짧게 덧붙인다.
+                    uploadMessage = response.hadWarnings
+                        ? "업로드 완료 · 스캔 결과가 안전하게 조정되었습니다."
+                        : "업로드 완료"
                     statusText = "업로드가 완료되었습니다."
                     uploadHistory.add(
                         roomId: response.roomId,
@@ -276,18 +318,32 @@ final class RoomScanController: NSObject, ObservableObject {
                     )
                 } catch {
                     isUploadingToBackend = false
-                    let message = "업로드 실패: \(error.localizedDescription)"
+                    let message = uploadFailureMessage(for: error)
                     uploadMessage = message
                     statusText = message
                     if let modelSourceURL { try? FileManager.default.removeItem(at: modelSourceURL) }
                 }
             }
         } catch {
-            let message = "업로드 실패: \(error.localizedDescription)"
+            let message = uploadFailureMessage(for: error)
             uploadMessage = message
             statusText = message
             if let modelSourceURL { try? FileManager.default.removeItem(at: modelSourceURL) }
         }
+    }
+
+    /// Web을 여는 것 자체가 실패했을 때(드물지만 기본 브라우저 처리기가 없는 등)
+    /// "Room 업로드는 이미 끝났다"는 걸 분명히 하기 위해 별도로 남기는 메시지 —
+    /// 업로드 실패와 혼동되지 않도록 uploadFailureMessage와 문구를 다르게 둔다.
+    func recordWebOpenFailure() {
+        uploadMessage = "업로드 완료 · 웹 열기에 실패했습니다. '웹에서 다시 보기'를 눌러 주세요."
+    }
+
+    private func uploadFailureMessage(for error: Error) -> String {
+        if let uploadError = error as? RoomUploadError {
+            return "업로드 실패: \(uploadError.errorDescription ?? uploadError.localizedDescription)"
+        }
+        return "업로드 실패: \(error.localizedDescription)"
     }
 
     /// Exports the finished RoomPlan capture as a USDZ so the uploaded-rooms
@@ -1121,14 +1177,26 @@ extension RoomScanController: RoomCaptureSessionDelegate {
                 self.capturedRoom = try await self.roomBuilder.capturedRoom(from: data)
                 self.exportedFileURL = nil
                 if let capturedRoom = self.capturedRoom {
-                    self.jsonPreviewText = self.makeJSONString(from: self.makeRoomFitJSON(from: capturedRoom))
+                    let roomJSON = self.makeRoomFitJSON(from: capturedRoom)
+                    // 스캔을 시작하자마자 멈췄거나 거의 아무것도 인식하지 못한 경우,
+                    // 방 크기가 사실상 0에 가까운 CapturedRoom이 나올 수 있다 — 이런
+                    // 결과를 그대로 업로드하지 않도록 jsonPreviewText를 만들지 않는다
+                    // (makeReferenceFrame이 이미 쓰는 0.3m 기준과 동일하게 맞춤).
+                    // capturedRoom 자체는 남겨둬 재시도/디버그 정보 공유는 계속 가능하다.
+                    if roomJSON.room.width < 0.3 || roomJSON.room.depth < 0.3 {
+                        self.jsonPreviewText = nil
+                        self.statusText = "스캔된 방 크기가 너무 작습니다. 방 전체가 보이도록 다시 스캔해 주세요."
+                    } else {
+                        self.jsonPreviewText = self.makeJSONString(from: roomJSON)
+                        self.statusText = "스캔이 완료되었습니다. 업로드할 준비가 되었습니다."
+                    }
                 } else {
                     self.jsonPreviewText = nil
+                    self.statusText = "스캔이 완료되었습니다. 업로드할 준비가 되었습니다."
                 }
                 self.lastModelURL = self.exportUSDZIfPossible()
                 self.isScanning = false
                 self.phase = .completed
-                self.statusText = "스캔이 완료되었습니다. 업로드할 준비가 되었습니다."
             } catch {
                 self.isScanning = false
                 self.phase = .idle

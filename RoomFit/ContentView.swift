@@ -410,6 +410,15 @@ struct ContentView: View {
             .buttonStyle(PillButtonStyle(kind: .solid))
             .disabled(!scanner.canExportJSON || scanner.isUploadingToBackend)
 
+            if scanner.canReopenWeb {
+                Button {
+                    openWeb()
+                } label: {
+                    Label("웹에서 보기", systemImage: "safari")
+                }
+                .buttonStyle(PillButtonStyle(kind: .ghost))
+            }
+
             Button {
                 requestRescan()
             } label: {
@@ -423,6 +432,19 @@ struct ContentView: View {
                 Label("홈으로", systemImage: "house.fill")
             }
             .buttonStyle(PillButtonStyle(kind: .ghost))
+        }
+    }
+
+    /// Room 업로드 성공 후 "웹에서 보기"에서 호출한다 — 업로드 자체가 실패한
+    /// 경우와 구분하기 위해, 여기서 실패하면(브라우저를 열 수 없는 등 드문 경우)
+    /// scanner.uploadMessage를 별도 문구로 덮어써 "업로드는 끝났다"는 걸 분명히
+    /// 한다.
+    private func openWeb() {
+        guard let url = scanner.webHandoffURL else { return }
+        UIApplication.shared.open(url) { success in
+            if !success {
+                scanner.recordWebOpenFailure()
+            }
         }
     }
 
@@ -640,6 +662,15 @@ struct ContentView: View {
             }
             .buttonStyle(PillButtonStyle(kind: .solid))
             .disabled(!scanner.canExportJSON || scanner.isUploadingToBackend)
+
+            if scanner.canReopenWeb {
+                Button {
+                    openWeb()
+                } label: {
+                    Label("웹에서 보기", systemImage: "safari")
+                }
+                .buttonStyle(PillButtonStyle(kind: .ghost))
+            }
 
             Button {
                 shareJSON()

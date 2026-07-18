@@ -18,6 +18,7 @@
 		4B2000082C3D130100000001 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 4B2000072C3D130100000001 /* Assets.xcassets */; };
 		4B2000092C3D130100000001 /* RoomModelPreview.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4B2000102C3D130100000001 /* RoomModelPreview.swift */; };
 		4B2000112C3D130100000001 /* Theme.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4B2000122C3D130100000001 /* Theme.swift */; };
+		4B2000142C3D130100000001 /* RoomFitClientIdentity.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4B2000132C3D130100000001 /* RoomFitClientIdentity.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -34,6 +35,7 @@
 		4B2000072C3D130100000001 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		4B2000102C3D130100000001 /* RoomModelPreview.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RoomModelPreview.swift; sourceTree = "<group>"; };
 		4B2000122C3D130100000001 /* Theme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Theme.swift; sourceTree = "<group>"; };
+		4B2000132C3D130100000001 /* RoomFitClientIdentity.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RoomFitClientIdentity.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -69,6 +71,7 @@
 				4B04739B2C3D120100000001 /* RoomFitApp.swift */,
 				4B2000122C3D130100000001 /* Theme.swift */,
 				4B2000002C3D130100000001 /* BackendConfig.swift */,
+				4B2000132C3D130100000001 /* RoomFitClientIdentity.swift */,
 				4B04739C2C3D120100000001 /* ContentView.swift */,
 				4B04739D2C3D120100000001 /* RoomScanController.swift */,
 				4B2000012C3D130100000001 /* RoomUploadService.swift */,
@@ -157,6 +160,7 @@
 				4B0473A02C3D120100000001 /* RoomFitApp.swift in Sources */,
 				4B2000112C3D130100000001 /* Theme.swift in Sources */,
 				4B2000022C3D130100000001 /* BackendConfig.swift in Sources */,
+				4B2000142C3D130100000001 /* RoomFitClientIdentity.swift in Sources */,
 				4B0473A12C3D120100000001 /* ContentView.swift in Sources */,
 				4B0473A22C3D120100000001 /* RoomScanController.swift in Sources */,
 				4B2000032C3D130100000001 /* RoomUploadService.swift in Sources */,
@@ -294,7 +298,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 2;
 				DEVELOPMENT_ASSET_PATHS = "";
 				DEVELOPMENT_TEAM = MYCFDSZ48B;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -324,7 +328,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 2;
 				DEVELOPMENT_ASSET_PATHS = "";
 				DEVELOPMENT_TEAM = MYCFDSZ48B;
 				GENERATE_INFOPLIST_FILE = NO;

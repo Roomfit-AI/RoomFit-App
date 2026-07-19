@@ -103,26 +103,30 @@ struct ContentView: View {
     // MARK: - Intro (3초 스플래시)
 
     private var introView: some View {
-        VStack(spacing: 20) {
+        VStack(spacing: 0) {
             Spacer()
 
-            IsometricRoomGlyph()
-                .frame(width: 96, height: 78)
+            Text("RoomFit")
+                .font(.system(size: 44, weight: .heavy))
+                .foregroundStyle(Color.appInk)
+                .frame(maxWidth: .infinity, alignment: .center)
 
-            VStack(spacing: 10) {
-                Text("ROOMFIT")
-                    .font(.system(size: 34, weight: .heavy))
-                    .foregroundStyle(Color.appInk)
-                    .tracking(2)
+            Spacer()
+
+            VStack(alignment: .leading, spacing: 8) {
+                Rectangle()
+                    .fill(Color.appWood)
+                    .frame(width: 28, height: 3)
 
                 Text("당신만의 공간,\nAI가 완성해드립니다")
                     .font(.system(size: 16, weight: .semibold))
                     .foregroundStyle(Color.appInkSoft)
-                    .multilineTextAlignment(.center)
+                    .multilineTextAlignment(.leading)
                     .lineSpacing(4)
             }
-
-            Spacer()
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 32)
+            .padding(.bottom, 56)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color.appCream.ignoresSafeArea())

@@ -109,7 +109,10 @@ struct ContentView: View {
             Text("RoomFit")
                 .font(.system(size: 44, weight: .heavy))
                 .foregroundStyle(Color.appInk)
+                .lineLimit(1)
+                .minimumScaleFactor(0.6)
                 .frame(maxWidth: .infinity, alignment: .center)
+                .padding(.horizontal, 24)
 
             Spacer()
 
@@ -1084,7 +1087,6 @@ private struct RoomDetailView: View {
     @State private var isReuploading = false
     @State private var reuploadMessage: String?
     @State private var isShowingDeleteConfirm = false
-    @State private var canReopenWeb = false
 
     init(record: UploadedRoomRecord, uploadHistory: UploadedRoomStore, onRequestPairingCode: @escaping () -> Void) {
         self.record = record
@@ -1099,9 +1101,13 @@ private struct RoomDetailView: View {
         uploadHistory.records.first { $0.id == record.id } ?? record
     }
 
-    /// Only offered after a re-upload succeeds this session — mirrors the
-    /// just-scanned flow, where "웹에서 보기" only appears once the current
-    /// roomId is known to be live on the backend.
+    /// A record only ever lands in history after a successful upload, so
+    /// `currentRecord.roomId` alone is enough to know "웹에서 보기" is valid —
+    /// no separate session-only flag needed. This makes the button persist
+    /// across re-entering the sheet (or relaunching the app) instead of
+    /// resetting to hidden, and it still updates immediately after a
+    /// reupload because `currentRecord` re-reads the (possibly new) roomId
+    /// from `uploadHistory` on every render.
     private var webHandoffURL: URL? {
         BackendConfig.webHandoffURL(roomId: currentRecord.roomId, clientId: RoomFitClientIdentity.getOrCreateClientId())
     }
@@ -1204,7 +1210,7 @@ private struct RoomDetailView: View {
                 .buttonStyle(PillButtonStyle(kind: .solid))
                 .disabled(isReuploading || uploadHistory.jsonURL(for: currentRecord) == nil)
 
-                if canReopenWeb {
+                if webHandoffURL != nil {
                     Button {
                         openWeb()
                     } label: {
@@ -1282,7 +1288,6 @@ private struct RoomDetailView: View {
                 try await uploadHistory.reupload(currentRecord)
                 isReuploading = false
                 reuploadMessage = "다시 업로드되었습니다."
-                canReopenWeb = true
             } catch {
                 isReuploading = false
                 reuploadMessage = "실패: \(error.localizedDescription)"

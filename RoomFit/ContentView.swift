@@ -103,26 +103,33 @@ struct ContentView: View {
     // MARK: - Intro (3초 스플래시)
 
     private var introView: some View {
-        VStack(spacing: 20) {
+        VStack(spacing: 0) {
             Spacer()
 
-            IsometricRoomGlyph()
-                .frame(width: 96, height: 78)
+            Text("RoomFit")
+                .font(.system(size: 44, weight: .heavy))
+                .foregroundStyle(Color.appInk)
+                .lineLimit(1)
+                .minimumScaleFactor(0.6)
+                .frame(maxWidth: .infinity, alignment: .center)
+                .padding(.horizontal, 24)
 
-            VStack(spacing: 10) {
-                Text("ROOMFIT")
-                    .font(.system(size: 34, weight: .heavy))
-                    .foregroundStyle(Color.appInk)
-                    .tracking(2)
+            Spacer()
+
+            VStack(alignment: .leading, spacing: 8) {
+                Rectangle()
+                    .fill(Color.appWood)
+                    .frame(width: 28, height: 3)
 
                 Text("당신만의 공간,\nAI가 완성해드립니다")
                     .font(.system(size: 16, weight: .semibold))
                     .foregroundStyle(Color.appInkSoft)
-                    .multilineTextAlignment(.center)
+                    .multilineTextAlignment(.leading)
                     .lineSpacing(4)
             }
-
-            Spacer()
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 32)
+            .padding(.bottom, 56)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color.appCream.ignoresSafeArea())
@@ -845,6 +852,7 @@ private struct HomeView: View {
     let onShowPairingCode: () -> Void
     @State private var selectedRecord: UploadedRoomRecord?
     @State private var recordPendingDelete: UploadedRoomRecord?
+    @State private var pendingPairingCodeRequest = false
 
     var body: some View {
         Group {
@@ -873,8 +881,17 @@ private struct HomeView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color.appCream.ignoresSafeArea())
-        .sheet(item: $selectedRecord) { record in
-            RoomDetailView(record: record, uploadHistory: uploadHistory)
+        .sheet(item: $selectedRecord, onDismiss: {
+            if pendingPairingCodeRequest {
+                pendingPairingCodeRequest = false
+                onShowPairingCode()
+            }
+        }) { record in
+            RoomDetailView(
+                record: record,
+                uploadHistory: uploadHistory,
+                onRequestPairingCode: { pendingPairingCodeRequest = true }
+            )
         }
         .confirmationDialog(
             "이 방을 목록에서 삭제하시겠습니까?",
@@ -1062,6 +1079,7 @@ private struct HomeView: View {
 private struct RoomDetailView: View {
     let record: UploadedRoomRecord
     @ObservedObject var uploadHistory: UploadedRoomStore
+    let onRequestPairingCode: () -> Void
     @Environment(\.dismiss) private var dismiss
     @State private var editedName: String
     @State private var shareURL: URL?
@@ -1070,9 +1088,10 @@ private struct RoomDetailView: View {
     @State private var reuploadMessage: String?
     @State private var isShowingDeleteConfirm = false
 
-    init(record: UploadedRoomRecord, uploadHistory: UploadedRoomStore) {
+    init(record: UploadedRoomRecord, uploadHistory: UploadedRoomStore, onRequestPairingCode: @escaping () -> Void) {
         self.record = record
         self.uploadHistory = uploadHistory
+        self.onRequestPairingCode = onRequestPairingCode
         _editedName = State(initialValue: record.name)
     }
 
@@ -1080,6 +1099,22 @@ private struct RoomDetailView: View {
     /// store each time so the heading reflects the latest saved name.
     private var currentRecord: UploadedRoomRecord {
         uploadHistory.records.first { $0.id == record.id } ?? record
+    }
+
+    /// A record only ever lands in history after a successful upload, so
+    /// `currentRecord.roomId` alone is enough to know "웹에서 보기" is valid —
+    /// no separate session-only flag needed. This makes the button persist
+    /// across re-entering the sheet (or relaunching the app) instead of
+    /// resetting to hidden, and it still updates immediately after a
+    /// reupload because `currentRecord` re-reads the (possibly new) roomId
+    /// from `uploadHistory` on every render.
+    private var webHandoffURL: URL? {
+        BackendConfig.webHandoffURL(roomId: currentRecord.roomId, clientId: RoomFitClientIdentity.getOrCreateClientId())
+    }
+
+    private func openWeb() {
+        guard let url = webHandoffURL else { return }
+        UIApplication.shared.open(url)
     }
 
     var body: some View {
@@ -1174,6 +1209,23 @@ private struct RoomDetailView: View {
                 }
                 .buttonStyle(PillButtonStyle(kind: .solid))
                 .disabled(isReuploading || uploadHistory.jsonURL(for: currentRecord) == nil)
+
+                if webHandoffURL != nil {
+                    Button {
+                        openWeb()
+                    } label: {
+                        Label("웹에서 보기", systemImage: "safari")
+                    }
+                    .buttonStyle(PillButtonStyle(kind: .ghost))
+                }
+
+                Button {
+                    onRequestPairingCode()
+                    dismiss()
+                } label: {
+                    Label("컴퓨터에서 보기", systemImage: "desktopcomputer")
+                }
+                .buttonStyle(PillButtonStyle(kind: .ghost))
 
                 Button {
                     uploadHistory.rename(currentRecord, to: editedName)
